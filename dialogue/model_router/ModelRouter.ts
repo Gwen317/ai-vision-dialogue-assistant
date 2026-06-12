@@ -1,25 +1,46 @@
-import { GoogleGenerativeAI, Part } from '@google/generative-ai';
+import type { ChatMessages } from '../../node_modules/@openrouter/sdk/esm/models/index.js';
 import { Socket } from 'socket.io';
 import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
+import type { TimelineEvent } from '../gateway_core/SocketGateway';
+
+type OpenRouterContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; imageUrl: { url: string; detail?: 'auto' | 'low' | 'high' } };
+
+interface ImageFrameEvent {
+  type: 'image';
+  timestamp: number;
+  imageBase64: string;
+}
+
+interface TurnTiming {
+  speechStartedAt: number;
+  speechEndedAt: number;
+}
 
 export class ModelRouter {
-  private static genAI: GoogleGenerativeAI | null = null;
+  private static openrouter: any = null;
 
-  private static getGenAI() {
-    if (!this.genAI) {
-      this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+  private static async getOpenRouter() {
+    if (!this.openrouter) {
+      const { OpenRouter } = await (new Function('return import("@openrouter/sdk")')() as Promise<typeof import('@openrouter/sdk')>);
+      this.openrouter = new OpenRouter({
+        apiKey: process.env.OPENROUTER_API_KEY || '',
+        appTitle: 'AI Vision Dialogue Assistant'
+      });
     }
-    return this.genAI;
+    return this.openrouter;
   }
 
   public static async processInteraction(
     socket: Socket,
     audioBuffer: Buffer,
-    imageFrame: string | null,
-    history: any[],
+    imageFrame: ImageFrameEvent | null,
+    timeline: TimelineEvent[],
+    turnTiming: TurnTiming,
     signal: AbortSignal
   ): Promise<void> {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey || apiKey === 'mock' || apiKey.startsWith('your_')) {
       console.log('--- ModelRouter: Running in MOCK MODE ---');
       
@@ -53,29 +74,22 @@ export class ModelRouter {
       return;
     }
 
-    const genAI = this.getGenAI();
+    const openrouter = await this.getOpenRouter();
 
     // 1. Transcribe the user's audio
     console.log('Transcribing user audio...');
-    const flashModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-    
-    const transcriptionParts: Part[] = [
-      {
-        inlineData: {
+    const transcriptionResult = await openrouter.stt.createTranscription({
+      sttRequest: {
+        model: process.env.OPENROUTER_STT_MODEL || 'openai/whisper-1',
+        inputAudio: {
           data: audioBuffer.toString('base64'),
-          mimeType: 'audio/webm' // WebM default from media recorder
-        }
-      },
-      {
-        text: 'Please transcribe the speech in this audio exactly, without any extra text, corrections, or commentary. If there is no speech, output an empty string.'
+          format: 'webm'
+        },
+        temperature: 0
       }
-    ];
-
-    const transcriptionResult = await flashModel.generateContent({
-      contents: [{ role: 'user', parts: transcriptionParts }]
     });
 
-    const userSpeech = transcriptionResult.response.text().trim();
+    const userSpeech = transcriptionResult.text.trim();
     console.log(`Transcribed text: "${userSpeech}"`);
 
     if (!userSpeech) {
@@ -90,21 +104,20 @@ export class ModelRouter {
 
     // 2. Query Long-Term Multimodal Episodic Memory
     console.log('Querying episodic memory...');
-    const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, imageFrame);
+    const currentImageBase64 = imageFrame?.imageBase64 ?? null;
+    const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
     
     // 3. Determine Model Routing (Tier 2 vs Tier 3)
-    let selectedModelName = 'gemini-2.5-flash'; // Tier 2 (Default)
+    let selectedModelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
     const complexKeywords = ['debug', 'code', 'math', 'solve', 'circuit', 'program', 'algorithm', 'explain in detail', 'analyze'];
     const lowerSpeech = userSpeech.toLowerCase();
     
     if (complexKeywords.some(keyword => lowerSpeech.includes(keyword))) {
-      selectedModelName = 'gemini-1.5-pro'; // Route to Tier 3 (Pro)
-      console.log(`Routing query to Tier 3 Model: ${selectedModelName}`);
+      selectedModelName = process.env.OPENROUTER_REASONING_MODEL || selectedModelName;
+      console.log(`Routing query to reasoning model: ${selectedModelName}`);
     } else {
-      console.log(`Routing query to Tier 2 Model: ${selectedModelName}`);
+      console.log(`Routing query to chat model: ${selectedModelName}`);
     }
-
-    const model = genAI.getGenerativeModel({ model: selectedModelName });
 
     // 4. Construct System Instruction / Prompt with memory context
     let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely.';
@@ -115,80 +128,155 @@ export class ModelRouter {
     }
 
     // 5. Assemble current payload parts
-    const currentParts: Part[] = [];
-    
-    // Inject the latest image frame if available
-    if (imageFrame) {
-      currentParts.push({
-        inlineData: {
-          data: imageFrame,
-          mimeType: 'image/jpeg'
-        }
-      });
-    }
+    const currentParts: OpenRouterContentPart[] = [];
 
-    // Inject the transcription of user speech
-    currentParts.push({ text: userSpeech });
+    currentParts.push({
+      type: 'text',
+      text: `[User speech @ ${new Date(turnTiming.speechStartedAt).toISOString()} - ${new Date(turnTiming.speechEndedAt).toISOString()}]\n${userSpeech}`
+    });
 
     // Prepare full conversation contents structure
-    const contents: any[] = [];
+    const messages: ChatMessages[] = [
+      {
+        role: 'system',
+        content: systemInstruction
+      }
+    ];
 
-    // Add history (limiting to last 6 messages to keep context window light and fast)
-    const recentHistory = history.slice(-6);
-    for (const msg of recentHistory) {
-      contents.push({
-        role: msg.role,
-        parts: msg.parts
-      });
-    }
-
-    // Add current user input parts
-    contents.push({
+    const currentUserEvent: TimelineEvent = {
+      type: 'message',
+      timestamp: turnTiming.speechStartedAt,
       role: 'user',
       parts: currentParts
+    };
+
+    const historicalMessages = timeline
+      .filter(event => event.type === 'message' && event.timestamp <= turnTiming.speechEndedAt)
+      .slice(-6);
+
+    const imageEvents = timeline
+      .filter(event => event.type === 'image' && event.timestamp <= turnTiming.speechEndedAt)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const selectedImages = new Map<number, TimelineEvent>();
+    imageEvents
+      .filter(event => event.timestamp <= turnTiming.speechStartedAt)
+      .slice(-2)
+      .forEach(event => selectedImages.set(event.timestamp, event));
+
+    const latestImageBeforeTurnEnd = imageEvents.at(-1);
+    if (latestImageBeforeTurnEnd) {
+      selectedImages.set(latestImageBeforeTurnEnd.timestamp, latestImageBeforeTurnEnd);
+    }
+
+    const contextEvents = [
+      ...historicalMessages,
+      ...selectedImages.values(),
+      currentUserEvent
+    ].sort((a, b) => {
+      if (a.timestamp !== b.timestamp) {
+        return a.timestamp - b.timestamp;
+      }
+
+      if (a.type === b.type) {
+        return 0;
+      }
+
+      return a.type === 'image' ? -1 : 1;
     });
+
+    for (const event of contextEvents) {
+      if (event.type === 'message') {
+        messages.push({
+          role: event.role === 'model' ? 'assistant' : 'user',
+          content: event.parts
+        });
+        continue;
+      }
+
+      messages.push({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `[Camera frame captured @ ${new Date(event.timestamp).toISOString()}]`
+          },
+          {
+            type: 'image_url',
+            imageUrl: {
+              url: `data:image/jpeg;base64,${event.imageBase64}`,
+              detail: 'low'
+            }
+          }
+        ]
+      });
+    }
 
     // 6. Generate content stream
     console.log('Generating streaming content...');
     socket.emit('state_change', 'SPEAKING');
     
-    const responseStream = await model.generateContentStream({
-      contents,
-      generationConfig: {
-        systemInstruction
+    const responseStream = await openrouter.chat.send({
+      chatRequest: {
+        model: selectedModelName,
+        messages,
+        stream: true,
+        reasoning: {
+          effort: 'medium'
+        },
+        streamOptions: {
+          includeUsage: true
+        }
       }
     });
 
     let fullResponseText = '';
 
-    for await (const chunk of responseStream.stream) {
+    for await (const chunk of responseStream) {
       // Check for abort signal from client interruption
       if (signal.aborted) {
         console.log('Stream generation aborted.');
         return;
       }
       
-      const chunkText = chunk.text();
+      if (chunk.error) {
+        throw new Error(`OpenRouter stream error ${chunk.error.code}: ${chunk.error.message}`);
+      }
+
+      const chunkText = chunk.choices[0]?.delta?.content ?? '';
       fullResponseText += chunkText;
       
       // Stream text chunk to client
-      socket.emit('text_chunk', chunkText);
+      if (chunkText) {
+        socket.emit('text_chunk', chunkText);
+      }
+
+      const reasoningTokens = chunk.usage?.completionTokensDetails?.reasoningTokens;
+      if (reasoningTokens) {
+        console.log(`OpenRouter reasoning tokens: ${reasoningTokens}`);
+      }
     }
 
     console.log('Stream generation completed.');
 
-    // Save this turn to conversation history
-    history.push({
+    const modelAnsweredAt = Date.now();
+
+    // Save this turn to the shared timeline using event time, not processing time.
+    timeline.push({
+      type: 'message',
+      timestamp: turnTiming.speechStartedAt,
       role: 'user',
-      parts: [{ text: userSpeech }]
+      parts: currentParts
     });
-    history.push({
+    timeline.push({
+      type: 'message',
+      timestamp: modelAnsweredAt,
       role: 'model',
       parts: [{ text: fullResponseText }]
     });
 
     // 7. Save to Long-Term Episodic Memory in the background (non-blocking)
-    EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, imageFrame)
+    EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
       .catch(err => console.error('Background memory recording failed:', err));
 
     socket.emit('state_change', 'IDLE');

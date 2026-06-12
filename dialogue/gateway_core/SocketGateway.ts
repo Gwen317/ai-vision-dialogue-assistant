@@ -1,10 +1,35 @@
 import { Server, Socket } from 'socket.io';
 import { ModelRouter } from '../model_router/ModelRouter';
 
+interface ImageFrameEvent {
+  type: 'image';
+  timestamp: number;
+  imageBase64: string;
+}
+
+interface ConversationMessageEvent {
+  type: 'message';
+  timestamp: number;
+  role: 'user' | 'model';
+  parts: any[];
+}
+
+export type TimelineEvent = ImageFrameEvent | ConversationMessageEvent;
+
+interface ImageFramePayload {
+  imageBase64: string;
+  timestamp?: number;
+}
+
+interface VADEndPayload {
+  speechStartedAt?: number;
+  speechEndedAt?: number;
+}
+
 interface Session {
   audioChunks: Buffer[];
-  currentImageFrame: string | null;
-  conversationHistory: any[];
+  currentImageFrame: ImageFrameEvent | null;
+  timeline: TimelineEvent[];
   abortController: AbortController | null;
 }
 
@@ -24,15 +49,29 @@ export class SocketGateway {
       this.sessions.set(socket.id, {
         audioChunks: [],
         currentImageFrame: null,
-        conversationHistory: [],
+        timeline: [],
         abortController: null
       });
 
       // Handle incoming camera frame
-      socket.on('image_frame', (base64Data: string) => {
+      socket.on('image_frame', (payload: string | ImageFramePayload) => {
         const session = this.sessions.get(socket.id);
         if (session) {
-          session.currentImageFrame = base64Data;
+          const imageBase64 = typeof payload === 'string' ? payload : payload.imageBase64;
+          const timestamp = typeof payload === 'string' ? Date.now() : payload.timestamp ?? Date.now();
+          const imageEvent: ImageFrameEvent = {
+            type: 'image',
+            timestamp,
+            imageBase64
+          };
+
+          session.currentImageFrame = imageEvent;
+          session.timeline.push(imageEvent);
+
+          const cutoff = Date.now() - 60_000;
+          session.timeline = session.timeline
+            .filter(event => event.type !== 'image' || event.timestamp >= cutoff)
+            .slice(-40);
         }
       });
 
@@ -45,7 +84,7 @@ export class SocketGateway {
       });
 
       // Handle VAD end (user finished speaking)
-      socket.on('vad_end', async () => {
+      socket.on('vad_end', async (payload?: VADEndPayload) => {
         const session = this.sessions.get(socket.id);
         if (!session) return;
 
@@ -63,14 +102,19 @@ export class SocketGateway {
           const audioBuffer = Buffer.concat(session.audioChunks);
           session.audioChunks = []; // Clear for next turn
 
-          const imageFrame = session.currentImageFrame;
+          const speechEndedAt = payload?.speechEndedAt ?? Date.now();
+          const speechStartedAt = payload?.speechStartedAt ?? speechEndedAt;
 
           // Call Gemini router
           await ModelRouter.processInteraction(
             socket,
             audioBuffer,
-            imageFrame,
-            session.conversationHistory,
+            session.currentImageFrame,
+            session.timeline,
+            {
+              speechStartedAt,
+              speechEndedAt
+            },
             session.abortController.signal
           );
         } catch (err: any) {
@@ -98,15 +142,18 @@ export class SocketGateway {
             session.abortController = null;
           }
 
-          // 2. Truncate conversation history to match what the user actually heard
-          if (session.conversationHistory.length > 0) {
-            const lastMsg = session.conversationHistory[session.conversationHistory.length - 1];
-            if (lastMsg.role === 'model' && typeof lastMsg.parts[0].text === 'string') {
+          // 2. Truncate conversation timeline to match what the user actually heard
+          if (session.timeline.length > 0) {
+            const lastMsg = [...session.timeline]
+              .reverse()
+              .find((event): event is ConversationMessageEvent => event.type === 'message' && event.role === 'model');
+
+            if (lastMsg && typeof lastMsg.parts[0].text === 'string') {
               const originalText = lastMsg.parts[0].text;
               if (data.offset < originalText.length) {
                 const truncatedText = originalText.substring(0, data.offset);
                 console.log(`Truncating last message from "${originalText.substring(0, 30)}..." to "${truncatedText}"`);
-                lastMsg.parts[0].text = truncatedText + "... [用户已打断]";
+                lastMsg.parts[0].text = truncatedText + "... [user interrupted]";
               }
             }
           }

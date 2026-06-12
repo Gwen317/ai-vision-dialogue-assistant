@@ -32,6 +32,7 @@ export default function App() {
   const visualizerIntervalRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const vadRef = useRef<any>(null);
+  const currentSpeechStartedAtRef = useRef<number | null>(null);
 
   // Text & Streaming Playback Refs
   const speechQueueRef = useRef<string[]>([]);
@@ -225,6 +226,7 @@ export default function App() {
         onSpeechStart: () => {
           console.log("VAD: Speech started");
           setIsUserSpeaking(true);
+          currentSpeechStartedAtRef.current = Date.now();
           // If AI is playing, this is an interruption!
           if (isSpeakingRef.current) {
             console.log('Interruption detected!');
@@ -261,7 +263,10 @@ export default function App() {
         if (video && ctx) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const base64Data = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-          socketRef.current?.emit('image_frame', base64Data);
+          socketRef.current?.emit('image_frame', {
+            imageBase64: base64Data,
+            timestamp: Date.now()
+          });
         }
         
         setTimeout(captureFrame, 500); // 2fps
@@ -287,7 +292,12 @@ export default function App() {
 
   const triggerVADEnd = () => {
     console.log('Silence detected, triggering VAD End');
-    socketRef.current?.emit('vad_end');
+    const endedAt = Date.now();
+    socketRef.current?.emit('vad_end', {
+      speechStartedAt: currentSpeechStartedAtRef.current ?? endedAt,
+      speechEndedAt: endedAt
+    });
+    currentSpeechStartedAtRef.current = null;
     fsmRef.current.transitionTo('THINKING');
   };
 
