@@ -241,6 +241,14 @@ export default function App() {
         // Set threshold dynamically: must be at least 35, or noiseFloor + 25 to filter fan hums
         const dynamicThreshold = Math.max(noiseFloor + 25, 35);
 
+        // Update real-time UI values directly via DOM to avoid React re-render lag at 60fps
+        const rmsEl = document.getElementById('vad-rms');
+        const thresholdEl = document.getElementById('vad-threshold');
+        const floorEl = document.getElementById('vad-noisefloor');
+        if (rmsEl) rmsEl.textContent = rms.toFixed(1);
+        if (thresholdEl) thresholdEl.textContent = dynamicThreshold.toFixed(1);
+        if (floorEl) floorEl.textContent = noiseFloor.toFixed(1);
+
         // Threshold detection
         if (rms > dynamicThreshold) {
           console.log(`VAD Speech Detected! RMS: ${rms.toFixed(1)} (Threshold: ${dynamicThreshold.toFixed(1)}, Noise Floor: ${noiseFloor.toFixed(1)})`);
@@ -585,7 +593,37 @@ export default function App() {
               {isUserSpeaking ? 'USER SPEAKING' : 'USER SILENT'}
             </span>
           </div>
-          <p style={{ fontSize: '11px', color: '#64748b', margin: 0, fontFamily: 'sans-serif' }}>
+          {/* VAD HUD Dashboard (Real-time 60fps stats) */}
+          <div 
+            style={{
+              display: 'flex',
+              gap: '20px',
+              marginTop: '10px',
+              padding: '8px 20px',
+              borderRadius: '8px',
+              background: 'rgba(10, 11, 16, 0.6)',
+              border: '1px solid rgba(0, 242, 254, 0.15)',
+              fontFamily: 'Orbitron, monospace',
+              fontSize: '11px',
+              color: '#8a99ad',
+              boxShadow: '0 0 10px rgba(0, 242, 254, 0.05)',
+              userSelect: 'none'
+            }}
+          >
+            <div>
+              RMS (音量): <span id="vad-rms" style={{ color: '#ffffff', fontWeight: 'bold' }}>0.0</span>
+            </div>
+            <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+            <div>
+              THRESHOLD (门限): <span id="vad-threshold" style={{ color: '#ff007f', fontWeight: 'bold' }}>35.0</span>
+            </div>
+            <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+            <div>
+              NOISE FLOOR (底噪): <span id="vad-noisefloor" style={{ color: '#39ff14', fontWeight: 'bold' }}>15.0</span>
+            </div>
+          </div>
+
+          <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', marginBottom: 0, fontFamily: 'sans-serif' }}>
             {socketConnected ? '双工声音感应器已激活，直接开口说话可打断 AI' : '等待网关连接...'}
           </p>
         </div>
