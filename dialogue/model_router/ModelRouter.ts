@@ -18,6 +18,108 @@ interface TurnTiming {
   speechEndedAt: number;
 }
 
+interface BuildTimelineMessagesInput {
+  systemInstruction: string;
+  userSpeech: string;
+  timeline: TimelineEvent[];
+  turnTiming: TurnTiming;
+}
+
+export function buildTimelineMessages({
+  systemInstruction,
+  userSpeech,
+  timeline,
+  turnTiming
+}: BuildTimelineMessagesInput): {
+  messages: ChatMessages[];
+  currentParts: OpenRouterContentPart[];
+} {
+  const currentParts: OpenRouterContentPart[] = [
+    {
+      type: 'text',
+      text: `[User speech @ ${new Date(turnTiming.speechStartedAt).toISOString()} - ${new Date(turnTiming.speechEndedAt).toISOString()}]\n${userSpeech}`
+    }
+  ];
+
+  const messages: ChatMessages[] = [
+    {
+      role: 'system',
+      content: systemInstruction
+    }
+  ];
+
+  const currentUserEvent: TimelineEvent = {
+    type: 'message',
+    timestamp: turnTiming.speechStartedAt,
+    role: 'user',
+    parts: currentParts
+  };
+
+  const historicalMessages = timeline
+    .filter(event => event.type === 'message' && event.timestamp <= turnTiming.speechEndedAt)
+    .slice(-6);
+
+  const imageEvents = timeline
+    .filter(event => event.type === 'image' && event.timestamp <= turnTiming.speechEndedAt)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const selectedImages = new Map<number, TimelineEvent>();
+  imageEvents
+    .filter(event => event.timestamp <= turnTiming.speechStartedAt)
+    .slice(-2)
+    .forEach(event => selectedImages.set(event.timestamp, event));
+
+  const latestImageBeforeTurnEnd = imageEvents.at(-1);
+  if (latestImageBeforeTurnEnd) {
+    selectedImages.set(latestImageBeforeTurnEnd.timestamp, latestImageBeforeTurnEnd);
+  }
+
+  const contextEvents = [
+    ...historicalMessages,
+    ...selectedImages.values(),
+    currentUserEvent
+  ].sort((a, b) => {
+    if (a.timestamp !== b.timestamp) {
+      return a.timestamp - b.timestamp;
+    }
+
+    if (a.type === b.type) {
+      return 0;
+    }
+
+    return a.type === 'image' ? -1 : 1;
+  });
+
+  for (const event of contextEvents) {
+    if (event.type === 'message') {
+      messages.push({
+        role: event.role === 'model' ? 'assistant' : 'user',
+        content: event.parts
+      });
+      continue;
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: `[Camera frame captured @ ${new Date(event.timestamp).toISOString()}]`
+        },
+        {
+          type: 'image_url',
+          imageUrl: {
+            url: `data:image/jpeg;base64,${event.imageBase64}`,
+            detail: 'low'
+          }
+        }
+      ]
+    });
+  }
+
+  return { messages, currentParts };
+}
+
 export class ModelRouter {
   private static openrouter: any = null;
 
@@ -127,90 +229,13 @@ export class ModelRouter {
       systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
     }
 
-    // 5. Assemble current payload parts
-    const currentParts: OpenRouterContentPart[] = [];
-
-    currentParts.push({
-      type: 'text',
-      text: `[User speech @ ${new Date(turnTiming.speechStartedAt).toISOString()} - ${new Date(turnTiming.speechEndedAt).toISOString()}]\n${userSpeech}`
+    // 5. Assemble current payload parts in event-time order.
+    const { messages, currentParts } = buildTimelineMessages({
+      systemInstruction,
+      userSpeech,
+      timeline,
+      turnTiming
     });
-
-    // Prepare full conversation contents structure
-    const messages: ChatMessages[] = [
-      {
-        role: 'system',
-        content: systemInstruction
-      }
-    ];
-
-    const currentUserEvent: TimelineEvent = {
-      type: 'message',
-      timestamp: turnTiming.speechStartedAt,
-      role: 'user',
-      parts: currentParts
-    };
-
-    const historicalMessages = timeline
-      .filter(event => event.type === 'message' && event.timestamp <= turnTiming.speechEndedAt)
-      .slice(-6);
-
-    const imageEvents = timeline
-      .filter(event => event.type === 'image' && event.timestamp <= turnTiming.speechEndedAt)
-      .sort((a, b) => a.timestamp - b.timestamp);
-
-    const selectedImages = new Map<number, TimelineEvent>();
-    imageEvents
-      .filter(event => event.timestamp <= turnTiming.speechStartedAt)
-      .slice(-2)
-      .forEach(event => selectedImages.set(event.timestamp, event));
-
-    const latestImageBeforeTurnEnd = imageEvents.at(-1);
-    if (latestImageBeforeTurnEnd) {
-      selectedImages.set(latestImageBeforeTurnEnd.timestamp, latestImageBeforeTurnEnd);
-    }
-
-    const contextEvents = [
-      ...historicalMessages,
-      ...selectedImages.values(),
-      currentUserEvent
-    ].sort((a, b) => {
-      if (a.timestamp !== b.timestamp) {
-        return a.timestamp - b.timestamp;
-      }
-
-      if (a.type === b.type) {
-        return 0;
-      }
-
-      return a.type === 'image' ? -1 : 1;
-    });
-
-    for (const event of contextEvents) {
-      if (event.type === 'message') {
-        messages.push({
-          role: event.role === 'model' ? 'assistant' : 'user',
-          content: event.parts
-        });
-        continue;
-      }
-
-      messages.push({
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `[Camera frame captured @ ${new Date(event.timestamp).toISOString()}]`
-          },
-          {
-            type: 'image_url',
-            imageUrl: {
-              url: `data:image/jpeg;base64,${event.imageBase64}`,
-              detail: 'low'
-            }
-          }
-        ]
-      });
-    }
 
     // 6. Generate content stream
     console.log('Generating streaming content...');
