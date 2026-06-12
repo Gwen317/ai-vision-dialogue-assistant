@@ -6,6 +6,16 @@ import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcou
 import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 import { MicVAD } from '@ricky0123/vad-web';
 
+function selectSpeechMimeType(): string {
+  const candidates = [
+    'audio/mp4',
+    'audio/webm;codecs=opus',
+    'audio/webm'
+  ];
+
+  return candidates.find(candidate => MediaRecorder.isTypeSupported(candidate)) || '';
+}
+
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [transcription, setTranscription] = useState<string>('');
@@ -33,6 +43,8 @@ export default function App() {
   const animationFrameRef = useRef<number | null>(null);
   const vadRef = useRef<any>(null);
   const currentSpeechStartedAtRef = useRef<number | null>(null);
+  const isRecordingSpeechRef = useRef<boolean>(false);
+  const speechChunksRef = useRef<Blob[]>([]);
 
   // Text & Streaming Playback Refs
   const speechQueueRef = useRef<string[]>([]);
@@ -194,18 +206,6 @@ export default function App() {
         acousticProcessorRef.current.startNoiseMonitoring(stream);
       }
 
-      // Initialize standard media recorder to stream audio chunks
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = async (e) => {
-        if (e.data.size > 0 && socketRef.current) {
-          const buffer = await e.data.arrayBuffer();
-          socketRef.current.emit('audio_chunk', buffer);
-        }
-      };
-
-      recorder.start(200); // chunk size: 200ms
       fsmRef.current.transitionTo('LISTENING');
       setTranscription('正在听您说话...');
       setAiResponse('');
@@ -226,7 +226,22 @@ export default function App() {
         onSpeechStart: () => {
           console.log("VAD: Speech started");
           setIsUserSpeaking(true);
-          currentSpeechStartedAtRef.current = Date.now();
+          const speechStartedAt = Date.now();
+          currentSpeechStartedAtRef.current = speechStartedAt;
+          isRecordingSpeechRef.current = true;
+          speechChunksRef.current = [];
+
+          const mimeType = selectSpeechMimeType();
+          const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+          mediaRecorderRef.current = recorder;
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              speechChunksRef.current.push(e.data);
+            }
+          };
+          recorder.start();
+
+          socketRef.current?.emit('vad_start', { speechStartedAt });
           // If AI is playing, this is an interruption!
           if (isSpeakingRef.current) {
             console.log('Interruption detected!');
@@ -276,15 +291,6 @@ export default function App() {
       // Render audio visualizer on canvas
       renderVisualizer(analyser);
 
-      // Auto-trigger the first interaction loop
-      setTimeout(() => {
-        if (socketRef.current) {
-          console.log('Auto-initiating AI speech loop...');
-          socketRef.current.emit('vad_end');
-          fsmRef.current.transitionTo('THINKING');
-        }
-      }, 500);
-
     } catch (err) {
       console.error('Microphone access denied:', err);
     }
@@ -292,11 +298,44 @@ export default function App() {
 
   const triggerVADEnd = () => {
     console.log('Silence detected, triggering VAD End');
+    const speechStartedAt = currentSpeechStartedAtRef.current;
+    if (!speechStartedAt) {
+      console.log('Ignoring VAD end because no speech start was recorded.');
+      isRecordingSpeechRef.current = false;
+      return;
+    }
+
     const endedAt = Date.now();
-    socketRef.current?.emit('vad_end', {
-      speechStartedAt: currentSpeechStartedAtRef.current ?? endedAt,
-      speechEndedAt: endedAt
-    });
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      console.log('Ignoring VAD end because no active speech recorder exists.');
+      isRecordingSpeechRef.current = false;
+      currentSpeechStartedAtRef.current = null;
+      return;
+    }
+
+    recorder.onstop = async () => {
+      const audioBlob = new Blob(speechChunksRef.current, { type: recorder.mimeType || speechChunksRef.current[0]?.type || 'audio/webm' });
+      speechChunksRef.current = [];
+
+      if (audioBlob.size > 0) {
+        const buffer = await audioBlob.arrayBuffer();
+        socketRef.current?.emit('audio_chunk', {
+          data: buffer,
+          mimeType: audioBlob.type
+        });
+      }
+
+      socketRef.current?.emit('vad_end', {
+        speechStartedAt,
+        speechEndedAt: endedAt
+      });
+      isRecordingSpeechRef.current = false;
+      mediaRecorderRef.current = null;
+    };
+
+    recorder.stop();
+
     currentSpeechStartedAtRef.current = null;
     fsmRef.current.transitionTo('THINKING');
   };

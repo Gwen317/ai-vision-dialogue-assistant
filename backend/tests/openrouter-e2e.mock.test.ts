@@ -56,7 +56,6 @@ function messageText(message: any): string {
 async function main() {
   process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
   process.env.OPENROUTER_CHAT_MODEL = 'nex-agi/nex-n2-pro:free';
-  process.env.OPENROUTER_STT_MODEL = 'openai/whisper-1';
 
   const base = Date.UTC(2026, 5, 12, 10, 0, 0);
   const imageAt30s = base + 30_000;
@@ -64,23 +63,19 @@ async function main() {
   const speechEndedAt = base + 34_000;
 
   let capturedChatRequest: any = null;
-  let capturedTranscriptionRequest: any = null;
+  let capturedAudioLength = 0;
 
   ModelRouter.setOpenRouterForTest({
-    stt: {
-      async createTranscription(request: any) {
-        capturedTranscriptionRequest = request;
-        return {
-          text: 'What is in the image?'
-        };
-      }
-    },
     chat: {
       async send(request: any) {
         capturedChatRequest = request.chatRequest;
         return mockChatStream();
       }
     }
+  });
+  ModelRouter.setSpeechTranscriberForTest(async (audioBuffer: Buffer) => {
+    capturedAudioLength = audioBuffer.byteLength;
+    return 'What is in the image?';
   });
 
   const socket = new MockSocket();
@@ -95,6 +90,7 @@ async function main() {
   await ModelRouter.processInteraction(
     socket as any,
     Buffer.from('mock-webm-audio'),
+    'audio/webm',
     {
       type: 'image',
       timestamp: imageAt30s,
@@ -122,8 +118,7 @@ async function main() {
   const userSpeechIndex = modelMessageTexts.findIndex((text: string) => text.includes('[User speech @'));
 
   console.log('Mock OpenRouter request flow:');
-  console.log(`  STT model: ${capturedTranscriptionRequest.sttRequest.model}`);
-  console.log(`  STT audio format: ${capturedTranscriptionRequest.sttRequest.inputAudio.format}`);
+  console.log(`  transcriber audio bytes: ${capturedAudioLength}`);
   console.log(`  chat model: ${capturedChatRequest.model}`);
   console.log(`  streamed response: ${textChunks}`);
   console.log('');
@@ -141,8 +136,8 @@ async function main() {
   console.log('');
 
   console.log('Assertions:');
-  console.log(`  STT called with webm audio: ${capturedTranscriptionRequest.sttRequest.inputAudio.format === 'webm'}`);
-  assert.equal(capturedTranscriptionRequest.sttRequest.inputAudio.format, 'webm');
+  console.log(`  speech transcriber received audio bytes: ${capturedAudioLength > 0}`);
+  assert.ok(capturedAudioLength > 0);
 
   console.log(`  chat used configured OpenRouter model: ${capturedChatRequest.model === 'nex-agi/nex-n2-pro:free'}`);
   assert.equal(capturedChatRequest.model, 'nex-agi/nex-n2-pro:free');
@@ -168,6 +163,8 @@ async function main() {
 
   console.log('');
   console.log('openrouter-e2e mock test passed');
+
+  ModelRouter.setSpeechTranscriberForTest(null);
 }
 
 main().catch(error => {

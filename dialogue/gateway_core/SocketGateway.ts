@@ -21,13 +21,30 @@ interface ImageFramePayload {
   timestamp?: number;
 }
 
+interface AudioChunkPayload {
+  data?: ArrayBuffer | Buffer | { type?: string; data?: number[] };
+  mimeType?: string;
+}
+
 interface VADEndPayload {
+  speechStartedAt?: number;
+  speechEndedAt?: number;
+}
+
+interface VADStartPayload {
+  speechStartedAt?: number;
+}
+
+interface TextQueryPayload {
+  text: string;
   speechStartedAt?: number;
   speechEndedAt?: number;
 }
 
 interface Session {
   audioChunks: Buffer[];
+  audioMimeType: string;
+  isCapturingSpeech: boolean;
   currentImageFrame: ImageFrameEvent | null;
   timeline: TimelineEvent[];
   abortController: AbortController | null;
@@ -48,6 +65,8 @@ export class SocketGateway {
       // Initialize session for this client
       this.sessions.set(socket.id, {
         audioChunks: [],
+        audioMimeType: 'audio/webm',
+        isCapturingSpeech: false,
         currentImageFrame: null,
         timeline: [],
         abortController: null
@@ -67,6 +86,7 @@ export class SocketGateway {
 
           session.currentImageFrame = imageEvent;
           session.timeline.push(imageEvent);
+          console.log(`Image frame received for ${socket.id} at ${new Date(timestamp).toISOString()}`);
 
           const cutoff = Date.now() - 60_000;
           session.timeline = session.timeline
@@ -76,10 +96,84 @@ export class SocketGateway {
       });
 
       // Handle incoming streaming audio chunks
-      socket.on('audio_chunk', (chunk: ArrayBuffer) => {
+      socket.on('audio_chunk', (payload: ArrayBuffer | AudioChunkPayload) => {
         const session = this.sessions.get(socket.id);
-        if (session) {
-          session.audioChunks.push(Buffer.from(chunk));
+        if (session?.isCapturingSpeech) {
+          const rawChunk = payload instanceof ArrayBuffer ? payload : payload.data;
+          if (!rawChunk) {
+            console.error(`Ignoring audio_chunk for ${socket.id}: missing payload data`);
+            return;
+          }
+
+          const chunkBuffer = Buffer.isBuffer(rawChunk)
+            ? rawChunk
+            : rawChunk instanceof ArrayBuffer
+              ? Buffer.from(rawChunk)
+              : Array.isArray(rawChunk.data)
+                ? Buffer.from(rawChunk.data)
+                : null;
+
+          if (!chunkBuffer) {
+            console.error(`Ignoring audio_chunk for ${socket.id}: unsupported payload shape`);
+            return;
+          }
+
+          session.audioMimeType = payload instanceof ArrayBuffer ? session.audioMimeType : payload.mimeType || session.audioMimeType;
+          session.audioChunks.push(chunkBuffer);
+          if (session.audioChunks.length === 1 || session.audioChunks.length % 25 === 0) {
+            console.log(`Audio chunks buffered for ${socket.id}: chunks=${session.audioChunks.length}, lastChunkBytes=${chunkBuffer.byteLength}`);
+          }
+        }
+      });
+
+      socket.on('vad_start', (payload?: VADStartPayload) => {
+        const session = this.sessions.get(socket.id);
+        if (!session) return;
+
+        session.audioChunks = [];
+        session.audioMimeType = 'audio/webm';
+        session.isCapturingSpeech = true;
+        const speechStartedAt = payload?.speechStartedAt ?? Date.now();
+        console.log(`VAD start for ${socket.id}: cleared audio buffer at ${new Date(speechStartedAt).toISOString()}`);
+      });
+
+      socket.on('text_query', async (payload: TextQueryPayload) => {
+        const session = this.sessions.get(socket.id);
+        if (!session) return;
+
+        const text = payload.text?.trim();
+        if (!text) return;
+
+        console.log(`Text query received for ${socket.id}: "${text}"`);
+        socket.emit('state_change', 'THINKING');
+
+        if (session.abortController) {
+          session.abortController.abort();
+        }
+        session.abortController = new AbortController();
+
+        try {
+          const speechEndedAt = payload.speechEndedAt ?? Date.now();
+          const speechStartedAt = payload.speechStartedAt ?? speechEndedAt;
+          session.audioChunks = [];
+
+          await ModelRouter.processTextInteraction(
+            socket,
+            text,
+            session.currentImageFrame,
+            session.timeline,
+            {
+              speechStartedAt,
+              speechEndedAt
+            },
+            session.abortController.signal
+          );
+        } catch (err) {
+          console.error('Error processing text query:', err);
+          socket.emit('error', 'Error generating response. Please try again.');
+          socket.emit('state_change', 'IDLE');
+        } finally {
+          session.abortController = null;
         }
       });
 
@@ -100,15 +194,21 @@ export class SocketGateway {
         try {
           // Combine audio chunks into a single buffer
           const audioBuffer = Buffer.concat(session.audioChunks);
+          const audioMimeType = session.audioMimeType;
           session.audioChunks = []; // Clear for next turn
+          session.isCapturingSpeech = false;
 
           const speechEndedAt = payload?.speechEndedAt ?? Date.now();
           const speechStartedAt = payload?.speechStartedAt ?? speechEndedAt;
+          console.log(
+            `VAD payload for ${socket.id}: audioBytes=${audioBuffer.byteLength}, audioMimeType=${audioMimeType}, speechStartedAt=${new Date(speechStartedAt).toISOString()}, speechEndedAt=${new Date(speechEndedAt).toISOString()}`
+          );
 
           // Call Gemini router
           await ModelRouter.processInteraction(
             socket,
             audioBuffer,
+            audioMimeType,
             session.currentImageFrame,
             session.timeline,
             {
