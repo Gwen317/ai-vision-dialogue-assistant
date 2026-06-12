@@ -11,33 +11,33 @@
 ### 1. `dialogue/vad_capture/FsmController.ts`
 * **功能描述**：双工状态机（FSM）控制器，驱动整个对话生命周期，防止状态错乱。
 * **开发任务清单**：
-  - [ ] 定义并管理状态类型：`IDLE`（空闲）、`LISTENING`（录音）、`THINKING`（思考）、`SPEAKING`（播放/AI说话）。
-  - [ ] 提供状态变更监听器注册接口（`registerStateListener`），实时驱动前端 UI 组件的动效。
-  - [ ] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
+  - [x] 定义并管理状态类型：`IDLE`（空闲）、`LISTENING`（录音）、`THINKING`（思考）、`SPEAKING`（播放/AI说话）。
+  - [x] 提供状态变更监听器注册接口（`registerStateListener`），实时驱动前端 UI 组件的动效。
+  - [x] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
 
 ### 2. `dialogue/acoustic_reverb/AudioAcousticProcessor.ts`
 * **功能描述**：端侧 Web Audio 声学模拟器，提供环境混响合成与 Lombard 效应自适应。
 * **开发任务清单**：
-  - [ ] 初始化全局 `AudioContext`，并建立 `Filter -> Convolver -> Gain -> Analyser` 的音轨渲染管线。
-  - [ ] 实现白噪声与指数衰减相结合的**冲激响应（IR）合成算法**，动态生成用于 ConvolverNode 的混响 Buffer，模拟客厅、走廊、大厅等物理空间。
-  - [ ] 监测输入麦克风的背景噪音强度。
-  - [ ] 实施**伦巴德效应（Lombard Effect）**：在噪声较大时，自动提升 AI 的播音音量（Gain）并微调高频滤波器增益（Highshelf Filter），确保语音可听度。
+  - [x] 初始化全局 `AudioContext`，并建立 `Filter -> Convolver -> Gain -> Analyser` 的音轨渲染管线。
+  - [x] 实现白噪声与指数衰减相结合的**冲激响应（IR）合成算法**，动态生成用于 ConvolverNode 的混响 Buffer，模拟客厅、走廊、大厅等物理空间。
+  - [x] 监测输入麦克风的背景噪音强度。
+  - [x] 实施**伦巴德效应（Lombard Effect）**：在噪声较大时，自动提升 AI 的播音音量（Gain）并微调高频滤波器增益（Highshelf Filter），确保语音可听度。
 
 ### 3. `dialogue/gateway_core/SocketGateway.ts`
 * **功能描述**：后端实时双工网关，负责二进制媒体流与 JSON 控制信令的分发。
 * **开发任务清单**：
-  - [ ] 开启长连接 Socket.io 服务，接收客户端 `audio_chunk` 音频流和 `image_frame` 画面帧。
-  - [ ] 监听 `vad_end` 并启动大模型处理。
-  - [ ] **打断控制**：监听客户端 `interrupt` 信令，立即调用正在生成的 Gemini 实例的 `AbortController.abort()` 强杀云端 Token 生成。
-  - [ ] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
+  - [x] 开启长连接 Socket.io 服务，接收客户端 `audio_chunk` 音频流和 `image_frame` 画面帧。
+  - [x] 监听 `vad_end` 并启动大模型处理。
+  - [x] **打断控制**：监听客户端 `interrupt` 信令，立即调用正在生成的 Gemini 实例的 `AbortController.abort()` 强杀云端 Token 生成。
+  - [x] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
 
 ### 4. `dialogue/model_router/ModelRouter.ts`
 * **功能描述**：后端智能大模型路由，负责用户语音识别与分级模型请求分流。
 * **开发任务清单**：
-  - [ ] 接入 Google Gen AI SDK。
-  - [ ] 使用 `gemini-2.5-flash` 极速识别用户上传的二进制 WebM 音频流，转化为文字。
-  - [ ] 接入情景记忆检索，实现历史上下文的召回与系统 Prompt 注入。
-  - [ ] **智能分级路由**：若识别文本中包含复杂任务关键字（如 `debug`, `code`, `math`, `circuit` 等），自动将模型请求路由至高推理能力的 `gemini-1.5-pro`，其余普通对话路由至 `gemini-2.5-flash`。
+  - [x] 接入 Google Gen AI SDK。
+  - [x] 使用 `gemini-2.5-flash` 极速识别用户上传的二进制 WebM 音频流，转化为文字。
+  - [x] 接入情景记忆检索，实现历史上下文的召回与系统 Prompt 注入。
+  - [x] **智能分级路由**：若识别文本中包含复杂任务关键字（如 `debug`, `code`, `math`, `circuit` 等），自动将模型请求路由至高推理能力的 `gemini-1.5-pro`，其余普通对话路由至 `gemini-2.5-flash`。
 
 ---
 
