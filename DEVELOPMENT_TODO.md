@@ -100,3 +100,18 @@
   - [ ] **双路加权检索**：实现相似度融合公式：
     $$\text{Score} = w_{\text{text}} \cdot \text{Sim}_{\text{text}} + w_{\text{vis}} \cdot \text{Sim}_{\text{vis}}$$
     其中 $w_{\text{text}} = 0.4$，$w_{\text{vis}} = 0.6$。在融合评分高于 `0.70` 时，将关联度最高的那张记忆卡片的会话纪要及画面描述拼入大模型 System Prompt 进行多模态 RAG 召回。
+
+---
+
+## 🛠️ 四、 关键技术实现要点与架构笔记 (Key Technical Points & Architectural Notes)
+
+### 1. 神经网络静音检测 (Silero VAD) 与端侧离线化集成
+* **解决痛点**：取代了易受环境白噪音、物理撞击声（拍手、敲键盘）、风噪等非人声干扰的传统 RMS 振幅门限方案，提供高置信度的实时人类声音振动特征识别。
+* **架构设计与部署细节**：
+  * **前端引擎**：使用 `@ricky0123/vad-web` 底层驱动，运行轻量级 ONNX 神经网络，利用浏览器的 WebAssembly 配合 Web Audio Worklet 进行多线程低时延采样及预测。
+  * **离线化及缓存**：将 VAD 的核心模型 `silero_vad_v5.onnx`、工作线程脚本 `vad.worklet.bundle.min.js` 以及 4 个 `onnxruntime-web` WebAssembly 库文件（`ort-wasm*.wasm`）存放在前端 `/public/vad/` 本地文件夹中。前端初始化时通过配置 `baseAssetPath: "/vad/"` 和 `onnxWASMBasePath: "/vad/"` 保证模型秒级加载，消除 CDN 抖动故障。
+* **全双工交互控制流**：
+  * **即时打断 (onSpeechStart)**：一旦检测到人声概率跨越阈值，立即取消本地 TTS 发音并上报中断偏移量 `interrupt`；切换全局状态为用户讲话，避免高延迟打断失败。
+  * **自动恢复思考 (onSpeechEnd)**：在用户完全停止说话后发出 `vad_end`，自动重置状态并触发云端多模态推理大模型重新生成回复，实现无按钮双手解放的流畅对话。
+  * **实时数据流 HUD 看板**：在 `onFrameProcessed` 中计算当前的 `isSpeech` 概率，采用**直写原生 DOM 机制**（不触发 React 核心 State 更新），在 60fps 频率下实现实时的 `SPEECH PROB` 人声置信度数据高光呈现。
+
