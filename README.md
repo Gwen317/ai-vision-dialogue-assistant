@@ -6,18 +6,38 @@
 
 ```text
 study/
+├── dialogue/                # 1. 双工对话与声学模拟模块
+│   ├── frontend/            # 前端组件 (VAD 状态机、混响处理等)
+│   │   ├── vad_capture/
+│   │   └── acoustic_reverb/
+│   └── backend/             # 后端网关 (大模型路由、流打断控制器等)
+│       ├── gateway_core/
+│       └── model_router/
+├── vision/                  # 2. 视频流捕获与音画同步模块
+│   ├── frontend/            # 前端组件 (滑动窗口缓存、模糊亮度校验、Canvas 音画同步)
+│   │   ├── video_capture/
+│   │   ├── quality_guard/
+│   │   └── drawing_sync/
+│   └── backend/             # 后端组件 (Canvas 绘图指令生成器)
+│       └── drawing_instructions/
+├── memory_graph/            # 3. 多模态情景记忆与实体图谱模块
+│   ├── frontend/            # 前端组件 (D3 物理实体拓扑图)
+│   │   └── entity_graph/
+│   └── backend/             # 后端组件 (情景记忆卡片、向量数据库检索等)
+│       ├── vector_rag/
+│       └── episodic_memory/
 ├── ai_topics_comparison/    # 课题评估、技术选型与系统架构设计文档
 │   ├── 技术选型与多维论证报告.md
 │   ├── 系统总体技术规程设计.md
 │   ├── 系统架构设计全景蓝图.md
 │   ├── 系统核心设计与创新特性数据规程规范.md
 │   └── 课题评估与选题对比报告.md
-├── frontend/                # 基于 React + Vite + TypeScript 的前端客户端
-│   ├── src/                 # 前端核心代码 (FSM 状态机、音视频采集、本地 VAD 等)
+├── frontend/                # 基于 React + Vite + TypeScript 的前端客户端主程序 (加载并融合上述模块)
+│   ├── src/                 
 │   ├── package.json
 │   └── vite.config.ts
-└── backend/                 # 基于 Node.js + Express + Socket.io 的云端网关
-    ├── src/                 # 后端核心代码 (Gemini API 路由、对话流式打断/截断器等)
+└── backend/                 # 基于 Node.js + Express + Socket.io 的云端网关主程序 (装载网关并统一路由)
+    ├── src/                 
     ├── .env                 # 环境变量配置文件 (包含 API Keys 等)
     └── package.json
 ```
