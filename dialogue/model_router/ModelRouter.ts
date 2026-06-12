@@ -34,30 +34,22 @@ export class ModelRouter {
       const chunks = mockText.split(/(?=[，。、])| /);
       let fullResponseText = '';
       
-      for (const chunk of chunks) {
-        if (signal.aborted) {
-          console.log('Mock Stream generation aborted by client.');
-          return;
+      while (true) {
+        for (const chunk of chunks) {
+          if (signal.aborted) {
+            console.log('Mock Stream generation aborted by client.');
+            return;
+          }
+          
+          fullResponseText += chunk;
+          socket.emit('text_chunk', chunk);
+          
+          await new Promise((resolve) => setTimeout(resolve, 200));
         }
-        
-        fullResponseText += chunk;
-        socket.emit('text_chunk', chunk);
-        
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Small delay between loops
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        console.log('Mock Stream looping: restarting text output.');
       }
-      
-      console.log('Mock Stream generation completed.');
-      
-      history.push({
-        role: 'user',
-        parts: [{ text: '测试双工打断' }]
-      });
-      history.push({
-        role: 'model',
-        parts: [{ text: fullResponseText }]
-      });
-      
-      socket.emit('state_change', 'IDLE');
       return;
     }
 

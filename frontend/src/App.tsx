@@ -12,6 +12,7 @@ export default function App() {
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [reverbPreset, setReverbPreset] = useState<string>('studio'); // studio, living, hall
   const [noiseAdaptEnabled, setNoiseAdaptEnabled] = useState<boolean>(true);
+  const [hasInteracted, setHasInteracted] = useState<boolean>(false);
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -274,6 +275,15 @@ export default function App() {
       // Render audio visualizer on canvas
       renderVisualizer(analyser);
 
+      // Auto-trigger the first interaction loop
+      setTimeout(() => {
+        if (socketRef.current) {
+          console.log('Auto-initiating AI speech loop...');
+          socketRef.current.emit('vad_end');
+          fsmRef.current.transitionTo('THINKING');
+        }
+      }, 500);
+
     } catch (err) {
       console.error('Microphone access denied:', err);
     }
@@ -281,13 +291,6 @@ export default function App() {
 
   const triggerVADEnd = () => {
     console.log('Silence detected, triggering VAD End');
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-
     socketRef.current?.emit('vad_end');
     fsmRef.current.transitionTo('THINKING');
   };
@@ -360,6 +363,43 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
+      {!hasInteracted && (
+        <div 
+          onClick={async () => {
+            setHasInteracted(true);
+            await startRecordingSession();
+          }}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(10, 11, 16, 0.95)',
+            backdropFilter: 'blur(10px)',
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            cursor: 'pointer'
+          }}
+        >
+          <div className="cyber-card" style={{ textAlign: 'center', padding: '40px', border: '1px solid #00f2fe', boxShadow: '0 0 30px rgba(0, 242, 254, 0.3)', width: '90%', maxWidth: '500px' }}>
+            <h2 style={{ color: '#00f2fe', fontSize: '22px', marginBottom: '15px', fontFamily: 'Orbitron, sans-serif' }}>
+              点击屏幕开启实时双工体验
+            </h2>
+            <p style={{ color: '#94a3b8', fontSize: '14px', lineHeight: '1.6' }}>
+              系统将自动激活麦克风，AI 将持续循环朗读测试文本。<br />
+              你只需随时说话即可瞬间中断 AI 播音，静音后 AI 会自动等待你开口，并在你停止说话后自动恢复朗读。
+            </p>
+            <div style={{ marginTop: '25px', display: 'inline-block', padding: '12px 24px', background: 'rgba(0, 242, 254, 0.1)', border: '1px solid #00f2fe', borderRadius: '4px', color: '#00f2fe', fontFamily: 'Orbitron', fontWeight: 'bold', letterSpacing: '1px' }}>
+              CLICK TO START
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Banner */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
         <div>
