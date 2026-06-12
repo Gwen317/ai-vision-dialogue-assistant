@@ -222,7 +222,11 @@ export default function App() {
       let noiseFloor = 15; // Initial estimation of room noise floor
 
       const runVAD = () => {
-        if (fsmRef.current.getCurrentState() === 'IDLE') return;
+        // Stop the loop only if the microphone stream is closed
+        if (!mediaStreamRef.current || mediaStreamRef.current.getTracks().every(track => track.readyState === 'ended')) {
+          console.log('VAD loop stopped: microphone stream is inactive.');
+          return;
+        }
 
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
