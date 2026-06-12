@@ -11,7 +11,8 @@
   },
   "include": [
     "src/**/*",
-    "../dialogue/**/*.ts",
+    "../dialogue/gateway_core/**/*.ts",
+    "../dialogue/model_router/**/*.ts",
     "../memory_graph/**/*.ts"
   ]
 }
