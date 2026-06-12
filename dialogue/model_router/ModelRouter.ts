@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, Part } from '@google/generative-ai';
 import { Socket } from 'socket.io';
-import { EpisodicMemoryService } from '../../../memory_graph/backend/episodic_memory/EpisodicMemoryService';
+import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
 
 export class ModelRouter {
   private static genAI: GoogleGenerativeAI | null = null;

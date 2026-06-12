@@ -7,25 +7,19 @@
 ```text
 study/
 ├── dialogue/                # 1. 双工对话与声学模拟模块
-│   ├── frontend/            # 前端组件 (VAD 状态机、混响处理等)
-│   │   ├── vad_capture/
-│   │   └── acoustic_reverb/
-│   └── backend/             # 后端网关 (大模型路由、流打断控制器等)
-│       ├── gateway_core/
-│       └── model_router/
+│   ├── vad_capture/         # (前端) FSM 状态机与语音捕获
+│   ├── acoustic_reverb/     # (前端) 空间混响与噪音自适应
+│   ├── gateway_core/        # (后端) 双工Socket与打断控制器
+│   └── model_router/        # (后端) Gemini智能分流路由
 ├── vision/                  # 2. 视频流捕获与音画同步模块
-│   ├── frontend/            # 前端组件 (滑动窗口缓存、模糊亮度校验、Canvas 音画同步)
-│   │   ├── video_capture/
-│   │   ├── quality_guard/
-│   │   └── drawing_sync/
-│   └── backend/             # 后端组件 (Canvas 绘图指令生成器)
-│       └── drawing_instructions/
+│   ├── video_capture/       # (前端) 摄像头帧滑动窗口捕获
+│   ├── quality_guard/       # (前端) 模糊度与平均亮度校验
+│   ├── drawing_sync/        # (前端) Canvas音画教学同步绘制
+│   └── drawing_instructions/# (后端) 绘图指令语法生成器
 ├── memory_graph/            # 3. 多模态情景记忆与实体图谱模块
-│   ├── frontend/            # 前端组件 (D3 物理实体拓扑图)
-│   │   └── entity_graph/
-│   └── backend/             # 后端组件 (情景记忆卡片、向量数据库检索等)
-│       ├── vector_rag/
-│       └── episodic_memory/
+│   ├── entity_graph/        # (前端) D3关系拓扑交互图谱
+│   ├── vector_rag/          # (后端) Qdrant 向量检索存根
+│   └── episodic_memory/     # (后端) 双路相似度情景记忆服务
 ├── ai_topics_comparison/    # 课题评估、技术选型与系统架构设计文档
 │   ├── 技术选型与多维论证报告.md
 │   ├── 系统总体技术规程设计.md
