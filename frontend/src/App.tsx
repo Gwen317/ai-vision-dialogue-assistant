@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { FsmController, AppState } from './utils/FsmController';
-import { AudioAcousticProcessor } from './utils/AudioAcousticProcessor';
-import { CanvasSyncRenderer } from './utils/CanvasSyncRenderer';
+import { FsmController, AppState } from '../../dialogue/vad_capture/FsmController';
+import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcousticProcessor';
+import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');

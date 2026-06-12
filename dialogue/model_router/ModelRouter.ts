@@ -19,6 +19,48 @@ export class ModelRouter {
     history: any[],
     signal: AbortSignal
   ): Promise<void> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'mock' || apiKey.startsWith('your_')) {
+      console.log('--- ModelRouter: Running in MOCK MODE ---');
+      
+      // Simulate transcription feedback
+      socket.emit('user_transcription', '测试双工打断');
+      
+      // Notify state SPEAKING
+      socket.emit('state_change', 'SPEAKING');
+      
+      const mockText = '这是一个用于测试双工流式打断功能的测试段落。在这个模式下，大模型不会进行真实的网络调用，而是以每两百毫秒一个词的速度向下游推送这一段很长的话。你可以随时对着你的麦克风说话，或者发出大一点的声音来测试端侧的静音检测是否能成功识别你开口说话的动作。一旦系统检测到你的声音，前端就会自动执行打断流程，将 AI 正在播放的声音静音，并通知后端强行关闭当前的流。我们可以测试后端的日志是否会打印 Stream generation aborted 和 Memory truncated。现在，请你试着说话来打断我吧！';
+      
+      const chunks = mockText.split(/(?=[，。、])| /);
+      let fullResponseText = '';
+      
+      for (const chunk of chunks) {
+        if (signal.aborted) {
+          console.log('Mock Stream generation aborted by client.');
+          return;
+        }
+        
+        fullResponseText += chunk;
+        socket.emit('text_chunk', chunk);
+        
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      
+      console.log('Mock Stream generation completed.');
+      
+      history.push({
+        role: 'user',
+        parts: [{ text: '测试双工打断' }]
+      });
+      history.push({
+        role: 'model',
+        parts: [{ text: fullResponseText }]
+      });
+      
+      socket.emit('state_change', 'IDLE');
+      return;
+    }
+
     const genAI = this.getGenAI();
 
     // 1. Transcribe the user's audio

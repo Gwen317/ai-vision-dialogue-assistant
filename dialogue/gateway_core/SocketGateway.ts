@@ -1,10 +1,16 @@
 import { Server, Socket } from 'socket.io';
 import { ModelRouter } from '../model_router/ModelRouter';
 
+interface Session {
+  audioChunks: Buffer[];
+  currentImageFrame: string | null;
+  conversationHistory: any[];
+  abortController: AbortController | null;
+}
+
 export class SocketGateway {
   private io: Server;
-  private conversationHistoryMap: Map<string, any[]> = new Map();
-  private abortControllerMap: Map<string, AbortController> = new Map();
+  private sessions: Map<string, Session> = new Map();
 
   constructor(io: Server) {
     this.io = io;
@@ -13,69 +19,114 @@ export class SocketGateway {
   public init() {
     this.io.on('connection', (socket: Socket) => {
       console.log(`Client connected: ${socket.id}`);
-      this.conversationHistoryMap.set(socket.id, []);
-
-      // Receive audio binary streams
-      socket.on('audio_chunk', (chunk: Buffer) => {
-        // Handle incoming raw audio chunks and append to buffer if needed
+      
+      // Initialize session for this client
+      this.sessions.set(socket.id, {
+        audioChunks: [],
+        currentImageFrame: null,
+        conversationHistory: [],
+        abortController: null
       });
 
-      // Receive VAD end and trigger model processing
-      socket.on('vad_end', async (data: { audio: Buffer; image: string | null }) => {
-        const history = this.conversationHistoryMap.get(socket.id) || [];
-        
-        // Setup AbortController for potential interruptions
-        const abortController = new AbortController();
-        this.abortControllerMap.set(socket.id, abortController);
+      // Handle incoming camera frame
+      socket.on('image_frame', (base64Data: string) => {
+        const session = this.sessions.get(socket.id);
+        if (session) {
+          session.currentImageFrame = base64Data;
+        }
+      });
+
+      // Handle incoming streaming audio chunks
+      socket.on('audio_chunk', (chunk: ArrayBuffer) => {
+        const session = this.sessions.get(socket.id);
+        if (session) {
+          session.audioChunks.push(Buffer.from(chunk));
+        }
+      });
+
+      // Handle VAD end (user finished speaking)
+      socket.on('vad_end', async () => {
+        const session = this.sessions.get(socket.id);
+        if (!session) return;
+
+        console.log(`VAD end detected for client ${socket.id}, processing request...`);
+        socket.emit('state_change', 'THINKING');
+
+        // Cancel any ongoing generation for this session
+        if (session.abortController) {
+          session.abortController.abort();
+        }
+        session.abortController = new AbortController();
 
         try {
-          socket.emit('state_change', 'THINKING');
+          // Combine audio chunks into a single buffer
+          const audioBuffer = Buffer.concat(session.audioChunks);
+          session.audioChunks = []; // Clear for next turn
+
+          const imageFrame = session.currentImageFrame;
+
+          // Call Gemini router
           await ModelRouter.processInteraction(
             socket,
-            data.audio,
-            data.image,
-            history,
-            abortController.signal
+            audioBuffer,
+            imageFrame,
+            session.conversationHistory,
+            session.abortController.signal
           );
-        } catch (err) {
-          console.error('Error processing interaction:', err);
-          socket.emit('state_change', 'IDLE');
+        } catch (err: any) {
+          if (err.name === 'AbortError') {
+            console.log(`Generation aborted for client ${socket.id}`);
+          } else {
+            console.error(`Error processing VAD end:`, err);
+            socket.emit('error', 'Error generating response. Please try again.');
+            socket.emit('state_change', 'IDLE');
+          }
         } finally {
-          this.abortControllerMap.delete(socket.id);
+          session.abortController = null;
         }
       });
 
       // Handle user interruption
       socket.on('interrupt', (data: { offset: number }) => {
-        console.log(`User interrupt received for socket ${socket.id}, offset: ${data.offset}`);
-        
-        // 1. Abort ongoing Gemini stream
-        const abortController = this.abortControllerMap.get(socket.id);
-        if (abortController) {
-          abortController.abort();
-          this.abortControllerMap.delete(socket.id);
-        }
-
-        // 2. Perform Memory Truncation (prevent memory split)
-        const history = this.conversationHistoryMap.get(socket.id);
-        if (history && history.length > 0) {
-          const lastMsg = history[history.length - 1];
-          if (lastMsg && lastMsg.role === 'model' && lastMsg.parts[0]?.text) {
-            const originalText = lastMsg.parts[0].text;
-            // Truncate response up to estimated characters sent before interrupt
-            const truncatedText = originalText.substring(0, data.offset) + '... [Interrupted by user]';
-            lastMsg.parts[0].text = truncatedText;
-            console.log(`Memory truncated to: "${truncatedText}"`);
+        const session = this.sessions.get(socket.id);
+        if (session) {
+          console.log(`Interrupt received from client ${socket.id} at offset ${data.offset}`);
+          
+          // 1. Cancel ongoing LLM request
+          if (session.abortController) {
+            session.abortController.abort();
+            session.abortController = null;
           }
-        }
 
-        socket.emit('state_change', 'LISTENING');
+          // 2. Truncate conversation history to match what the user actually heard
+          if (session.conversationHistory.length > 0) {
+            const lastMsg = session.conversationHistory[session.conversationHistory.length - 1];
+            if (lastMsg.role === 'model' && typeof lastMsg.parts[0].text === 'string') {
+              const originalText = lastMsg.parts[0].text;
+              if (data.offset < originalText.length) {
+                const truncatedText = originalText.substring(0, data.offset);
+                console.log(`Truncating last message from "${originalText.substring(0, 30)}..." to "${truncatedText}"`);
+                lastMsg.parts[0].text = truncatedText + "... [用户已打断]";
+              }
+            }
+          }
+
+          socket.emit('state_change', 'LISTENING');
+        }
+      });
+
+      // Ping-pong for keep-alive
+      socket.on('ping', () => {
+        socket.emit('pong');
       });
 
       socket.on('disconnect', () => {
         console.log(`Client disconnected: ${socket.id}`);
-        this.conversationHistoryMap.delete(socket.id);
-        this.abortControllerMap.delete(socket.id);
+        const session = this.sessions.get(socket.id);
+        if (session?.abortController) {
+          session.abortController.abort();
+        }
+        this.sessions.delete(socket.id);
       });
     });
   }
