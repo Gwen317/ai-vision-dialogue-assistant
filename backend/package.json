@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "test:timeline": "ts-node --transpile-only tests/timeline-order.test.ts",
+    "test:openrouter:e2e": "ts-node --transpile-only tests/openrouter-e2e.mock.test.ts",
+    "test:openrouter:live": "ts-node --transpile-only tests/openrouter-live.smoke.test.ts",
     "build": "tsc",
     "start": "node dist/server.js"
   },

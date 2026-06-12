@@ -123,6 +123,10 @@ export function buildTimelineMessages({
 export class ModelRouter {
   private static openrouter: any = null;
 
+  public static setOpenRouterForTest(openrouter: any) {
+    this.openrouter = openrouter;
+  }
+
   private static async getOpenRouter() {
     if (!this.openrouter) {
       const { OpenRouter } = await (new Function('return import("@openrouter/sdk")')() as Promise<typeof import('@openrouter/sdk')>);
