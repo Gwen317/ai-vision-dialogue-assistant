@@ -13,6 +13,7 @@ export default function App() {
   const [reverbPreset, setReverbPreset] = useState<string>('studio'); // studio, living, hall
   const [noiseAdaptEnabled, setNoiseAdaptEnabled] = useState<boolean>(true);
   const [hasInteracted, setHasInteracted] = useState<boolean>(false);
+  const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -227,6 +228,7 @@ export default function App() {
         if (rms > 15) {
           if (!speaking) {
             speaking = true;
+            setIsUserSpeaking(true);
             // If AI is playing, this is an interruption!
             if (isSpeakingRef.current) {
               console.log('Interruption detected!');
@@ -241,6 +243,7 @@ export default function App() {
             // Require 1.2s of silence (60 frames at ~20ms each) to trigger end
             if (silenceCounter > 60) {
               speaking = false;
+              setIsUserSpeaking(false);
               silenceCounter = 0;
               triggerVADEnd();
             }
@@ -345,6 +348,7 @@ export default function App() {
     fsmRef.current.transitionTo('IDLE');
     setTranscription('');
     setAiResponse('');
+    setIsUserSpeaking(false);
   };
 
   const handleReverbChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -506,24 +510,66 @@ export default function App() {
           </p>
         </div>
 
-        {/* Central Controls */}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '20px' }}>
-          {appState === 'IDLE' ? (
-            <button className="btn-neon" onClick={startRecordingSession}>
-              <svg style={{ width: '18px', height: '18px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-              开启语音通话 (Connect Mic)
-            </button>
-          ) : (
-            <button className="btn-neon btn-neon-rose" onClick={stopSession}>
-              <svg style={{ width: '18px', height: '18px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 10a1 1 0 011-1h4a1 1 0 001-1m-1 5H9m0 0H7" />
-              </svg>
-              断开连接 (Mute Session)
-            </button>
-          )}
+        {/* Central Controls (Speech Status Indicator, Non-clickable) */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: '10px' }}>
+          <div 
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '15px',
+              padding: '12px 30px',
+              borderRadius: '50px',
+              background: isUserSpeaking ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+              border: isUserSpeaking ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.1)',
+              boxShadow: isUserSpeaking ? '0 0 25px rgba(0, 242, 254, 0.4)' : 'none',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              pointerEvents: 'none',
+              userSelect: 'none'
+            }}
+          >
+            {/* Pulsating recording circle */}
+            <div 
+              style={{
+                width: '12px',
+                height: '12px',
+                borderRadius: '50%',
+                background: isUserSpeaking ? '#00f2fe' : '#475569',
+                boxShadow: isUserSpeaking ? '0 0 10px #00f2fe' : 'none',
+              }}
+            />
+            
+            {/* Microphone Icon */}
+            <svg 
+              style={{ 
+                width: '20px', 
+                height: '20px', 
+                color: isUserSpeaking ? '#00f2fe' : '#475569',
+                transition: 'color 0.3s ease'
+              }} 
+              fill="none" 
+              stroke="currentColor" 
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+            
+            {/* Status text */}
+            <span 
+              style={{ 
+                fontFamily: 'Orbitron, sans-serif', 
+                fontSize: '14px', 
+                fontWeight: 'bold',
+                color: isUserSpeaking ? '#00f2fe' : '#475569',
+                letterSpacing: '1px',
+                transition: 'color 0.3s ease'
+              }}
+            >
+              {isUserSpeaking ? 'USER SPEAKING' : 'USER SILENT'}
+            </span>
+          </div>
+          <p style={{ fontSize: '11px', color: '#64748b', margin: 0, fontFamily: 'sans-serif' }}>
+            {socketConnected ? '双工声音感应器已激活，直接开口说话可打断 AI' : '等待网关连接...'}
+          </p>
         </div>
       </div>
     </div>
