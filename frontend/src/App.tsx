@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { FsmController, AppState } from '../../dialogue/vad_capture/FsmController';
+import { FsmController } from '../../dialogue/vad_capture/FsmController';
+import type { AppState } from '../../dialogue/vad_capture/FsmController';
 import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcousticProcessor';
 import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 
