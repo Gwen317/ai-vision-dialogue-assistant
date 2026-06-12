@@ -177,7 +177,13 @@ export default function App() {
     acousticProcessorRef.current.init();
     
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
       mediaStreamRef.current = stream;
 
       // Start environmental noise monitoring (Lombard Effect)
@@ -213,6 +219,7 @@ export default function App() {
 
       let speaking = false;
       let silenceCounter = 0;
+      let noiseFloor = 15; // Initial estimation of room noise floor
 
       const runVAD = () => {
         if (fsmRef.current.getCurrentState() === 'IDLE') return;
@@ -224,8 +231,18 @@ export default function App() {
         }
         const rms = sum / bufferLength;
 
-        // Threshold detection (RMS value > 15 means active speaking)
-        if (rms > 15) {
+        // Dynamic noise floor tracking (updates when not speaking)
+        if (rms < noiseFloor) {
+          noiseFloor = rms; // dynamic floor capture
+        } else {
+          noiseFloor = noiseFloor * 0.999 + rms * 0.001; // slow drift upwards
+        }
+
+        // Set threshold dynamically: must be at least 35, or noiseFloor + 25 to filter fan hums
+        const dynamicThreshold = Math.max(noiseFloor + 25, 35);
+
+        // Threshold detection
+        if (rms > dynamicThreshold) {
           if (!speaking) {
             speaking = true;
             setIsUserSpeaking(true);
