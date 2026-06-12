@@ -231,11 +231,11 @@ export default function App() {
         }
         const rms = sum / bufferLength;
 
-        // Dynamic noise floor tracking (updates when not speaking)
+        // Dynamic noise floor tracking: only drift upwards during relative silence (rms < 30)
         if (rms < noiseFloor) {
-          noiseFloor = rms; // dynamic floor capture
-        } else {
-          noiseFloor = noiseFloor * 0.999 + rms * 0.001; // slow drift upwards
+          noiseFloor = rms; // capture absolute minimum
+        } else if (rms < 30) {
+          noiseFloor = noiseFloor * 0.995 + rms * 0.005; // slowly adapt to shifting noise floors
         }
 
         // Set threshold dynamically: must be at least 35, or noiseFloor + 25 to filter fan hums
@@ -243,6 +243,7 @@ export default function App() {
 
         // Threshold detection
         if (rms > dynamicThreshold) {
+          console.log(`VAD Speech Detected! RMS: ${rms.toFixed(1)} (Threshold: ${dynamicThreshold.toFixed(1)}, Noise Floor: ${noiseFloor.toFixed(1)})`);
           if (!speaking) {
             speaking = true;
             setIsUserSpeaking(true);
