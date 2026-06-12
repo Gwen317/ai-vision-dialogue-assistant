@@ -4,6 +4,7 @@ import { FsmController } from '../../dialogue/vad_capture/FsmController';
 import type { AppState } from '../../dialogue/vad_capture/FsmController';
 import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcousticProcessor';
 import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
+import { MicVAD } from '@ricky0123/vad-web';
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');
@@ -30,6 +31,7 @@ export default function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const visualizerIntervalRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const vadRef = useRef<any>(null);
 
   // Text & Streaming Playback Refs
   const speechQueueRef = useRef<string[]>([]);
@@ -207,83 +209,44 @@ export default function App() {
       setTranscription('正在听您说话...');
       setAiResponse('');
 
-      // Setup simple volume-threshold based VAD (Fallback VAD)
+      // Setup audio analyser only for the visualizer
       const audioCtx = acousticProcessorRef.current.getAudioContext()!;
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       source.connect(analyser);
 
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-
-      let speaking = false;
-      let silenceCounter = 0;
-      let noiseFloor = 15; // Initial estimation of room noise floor
-
-      const runVAD = () => {
-        // Stop the loop only if the microphone stream is closed
-        if (!mediaStreamRef.current || mediaStreamRef.current.getTracks().every(track => track.readyState === 'ended')) {
-          console.log('VAD loop stopped: microphone stream is inactive.');
-          return;
-        }
-
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
-          sum += dataArray[i];
-        }
-        const rms = sum / bufferLength;
-
-        // Dynamic noise floor tracking: only drift upwards during relative silence (rms < 30)
-        if (rms < noiseFloor) {
-          noiseFloor = rms; // capture absolute minimum
-        } else if (rms < 30) {
-          noiseFloor = noiseFloor * 0.995 + rms * 0.005; // slowly adapt to shifting noise floors
-        }
-
-        // Set threshold dynamically: must be at least 35, or noiseFloor + 25 to filter fan hums
-        const dynamicThreshold = Math.max(noiseFloor + 25, 35);
-
-        // Update real-time UI values directly via DOM to avoid React re-render lag at 60fps
-        const rmsEl = document.getElementById('vad-rms');
-        const thresholdEl = document.getElementById('vad-threshold');
-        const floorEl = document.getElementById('vad-noisefloor');
-        if (rmsEl) rmsEl.textContent = rms.toFixed(1);
-        if (thresholdEl) thresholdEl.textContent = dynamicThreshold.toFixed(1);
-        if (floorEl) floorEl.textContent = noiseFloor.toFixed(1);
-
-        // Threshold detection
-        if (rms > dynamicThreshold) {
-          console.log(`VAD Speech Detected! RMS: ${rms.toFixed(1)} (Threshold: ${dynamicThreshold.toFixed(1)}, Noise Floor: ${noiseFloor.toFixed(1)})`);
-          if (!speaking) {
-            speaking = true;
-            setIsUserSpeaking(true);
-            // If AI is playing, this is an interruption!
-            if (isSpeakingRef.current) {
-              console.log('Interruption detected!');
-              window.speechSynthesis.cancel();
-              socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
-            }
+      // Setup Silero VAD (ONNX Neural Network VAD)
+      const vad = await MicVAD.new({
+        stream: stream,
+        model: "v5",
+        baseAssetPath: "/vad/",
+        onnxWASMBasePath: "/vad/",
+        onSpeechStart: () => {
+          console.log("VAD: Speech started");
+          setIsUserSpeaking(true);
+          // If AI is playing, this is an interruption!
+          if (isSpeakingRef.current) {
+            console.log('Interruption detected!');
+            window.speechSynthesis.cancel();
+            socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
           }
-          silenceCounter = 0;
-        } else {
-          if (speaking) {
-            silenceCounter++;
-            // Require 1.2s of silence (60 frames at ~20ms each) to trigger end
-            if (silenceCounter > 60) {
-              speaking = false;
-              setIsUserSpeaking(false);
-              silenceCounter = 0;
-              triggerVADEnd();
-            }
+        },
+        onSpeechEnd: () => {
+          console.log("VAD: Speech ended");
+          setIsUserSpeaking(false);
+          triggerVADEnd();
+        },
+        onFrameProcessed: (probabilities) => {
+          // Update speech probability directly in DOM to avoid React re-render lag at high frequency
+          const probEl = document.getElementById('vad-rms');
+          if (probEl) {
+            probEl.textContent = (probabilities.isSpeech * 100).toFixed(1) + "%";
           }
         }
-        
-        requestAnimationFrame(runVAD);
-      };
-
-      runVAD();
+      });
+      vadRef.current = vad;
+      vad.start();
 
       // Start 2fps Camera capture loop to sync with audio
       const captureFrame = () => {
@@ -369,6 +332,14 @@ export default function App() {
 
   const stopSession = () => {
     window.speechSynthesis.cancel();
+    if (vadRef.current) {
+      try {
+        vadRef.current.destroy();
+      } catch (err) {
+        console.error('Error destroying VAD:', err);
+      }
+      vadRef.current = null;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -478,7 +449,7 @@ export default function App() {
               USER INPUT
             </span>
             <p style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: '1.4' }}>
-              {transcription || '点击下方按钮并对着麦克风说话...'}
+              {transcription || '请直接对着麦克风说话...'}
             </p>
           </div>
         </div>
@@ -615,15 +586,15 @@ export default function App() {
             }}
           >
             <div>
-              RMS (音量): <span id="vad-rms" style={{ color: '#ffffff', fontWeight: 'bold' }}>0.0</span>
+              SPEECH PROB (人声概率): <span id="vad-rms" style={{ color: '#ffffff', fontWeight: 'bold' }}>0.0%</span>
             </div>
             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
             <div>
-              THRESHOLD (门限): <span id="vad-threshold" style={{ color: '#ff007f', fontWeight: 'bold' }}>35.0</span>
+              ACTIVATION (激活阈值): <span style={{ color: '#ff007f', fontWeight: 'bold' }}>50.0%</span>
             </div>
             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
             <div>
-              NOISE FLOOR (底噪): <span id="vad-noisefloor" style={{ color: '#39ff14', fontWeight: 'bold' }}>15.0</span>
+              MODEL (检测模型): <span style={{ color: '#39ff14', fontWeight: 'bold' }}>Silero VAD (ONNX)</span>
             </div>
           </div>
 
