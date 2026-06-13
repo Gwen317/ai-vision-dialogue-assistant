@@ -5,6 +5,7 @@ import type { AppState } from '../../dialogue/vad_capture/FsmController';
 import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcousticProcessor';
 import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 import { MicVAD } from '@ricky0123/vad-web';
+import { VideoCapture } from '../../vision/video_capture/VideoCapture';
 
 function selectSpeechMimeType(): string {
   const candidates = [
@@ -44,6 +45,7 @@ export default function App() {
   const fsmRef = useRef<FsmController>(new FsmController());
   const acousticProcessorRef = useRef<AudioAcousticProcessor>(new AudioAcousticProcessor());
   const canvasRendererRef = useRef<CanvasSyncRenderer | null>(null);
+  const videoCaptureRef = useRef<VideoCapture>(new VideoCapture());
 
   // Audio Recording & Playback Refs
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -255,6 +257,7 @@ export default function App() {
       socket.disconnect();
       if (visualizerIntervalRef.current) clearInterval(visualizerIntervalRef.current);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      videoCaptureRef.current.stopCapture();
     };
   }, []);
 
@@ -606,28 +609,8 @@ export default function App() {
       vadRef.current = vad;
       vad.start();
 
-      // Start 2fps Camera capture loop to sync with audio
-      const captureFrame = () => {
-        if (fsmRef.current.getCurrentState() === 'IDLE') return;
-
-        const video = videoRef.current;
-        const canvas = document.createElement('canvas');
-        canvas.width = 160;
-        canvas.height = 120;
-        const ctx = canvas.getContext('2d');
-        
-        if (video && ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const base64Data = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-          socketRef.current?.emit('image_frame', {
-            imageBase64: base64Data,
-            timestamp: Date.now()
-          });
-        }
-        
-        setTimeout(captureFrame, 500); // 2fps
-      };
-      captureFrame();
+      // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks
+      videoCaptureRef.current.startCapture(stream);
 
       // Render audio visualizer on canvas
       renderVisualizer(analyser);
@@ -659,6 +642,67 @@ export default function App() {
       const audioBlob = new Blob(speechChunksRef.current, { type: recorder.mimeType || speechChunksRef.current[0]?.type || 'audio/webm' });
       speechChunksRef.current = [];
 
+      // Get aligned frames from VideoCapture
+      const { startFrame, endFrame } = videoCaptureRef.current.getAlignedFrames(
+        speechStartedAt,
+        endedAt
+      );
+
+      // Perform QualityGuard check on the end frame (the most relevant scene frame)
+      if (endFrame) {
+        if (!endFrame.brightness.passed) {
+          console.warn(`Quality check failed (brightness): ${endFrame.brightness.reason}`);
+          
+          // Intercept sending and speak warning locally using SpeechSynthesis
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(
+            endFrame.brightness.score && endFrame.brightness.score < 40 
+              ? '当前环境光线过暗，请开启灯光后再试。' 
+              : '当前画面过曝，请调整相机角度或光源后再试。'
+          );
+          utterance.lang = 'zh-CN';
+          window.speechSynthesis.speak(utterance);
+          
+          // Reset UI/Recorder state
+          setIsUserSpeaking(false);
+          isRecordingSpeechRef.current = false;
+          mediaRecorderRef.current = null;
+          fsmRef.current.transitionTo('LISTENING');
+          
+          // Re-init SpeechRecognition
+          if (recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
+            try {
+              recognitionRef.current.start();
+            } catch (e) {}
+          }
+          return;
+        }
+
+        if (!endFrame.blur.passed) {
+          console.warn(`Quality check failed (blur): ${endFrame.blur.reason}`);
+          
+          // Intercept sending and speak warning locally using SpeechSynthesis
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance('当前画面过于模糊，请稳住相机后再试。');
+          utterance.lang = 'zh-CN';
+          window.speechSynthesis.speak(utterance);
+          
+          // Reset UI/Recorder state
+          setIsUserSpeaking(false);
+          isRecordingSpeechRef.current = false;
+          mediaRecorderRef.current = null;
+          fsmRef.current.transitionTo('LISTENING');
+          
+          // Re-init SpeechRecognition
+          if (recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
+            try {
+              recognitionRef.current.start();
+            } catch (e) {}
+          }
+          return;
+        }
+      }
+
       if (audioBlob.size > 0) {
         const buffer = await audioBlob.arrayBuffer();
         socketRef.current?.emit('audio_chunk', {
@@ -672,7 +716,9 @@ export default function App() {
         speechEndedAt: endedAt,
         localText: localSpeechTextRef.current,
         llmProvider: llmProviderRef.current,
-        ttsProvider: ttsProviderRef.current
+        ttsProvider: ttsProviderRef.current,
+        startFrame: startFrame ? startFrame.imageBase64 : undefined,
+        endFrame: endFrame ? endFrame.imageBase64 : undefined
       });
       isRecordingSpeechRef.current = false;
       mediaRecorderRef.current = null;
@@ -769,6 +815,7 @@ export default function App() {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
     }
+    videoCaptureRef.current.stopCapture();
     fsmRef.current.transitionTo('IDLE');
     setTranscription('');
     setAiResponse('');

@@ -1,6 +1,10 @@
+import { QualityGuard, type QualityResult } from '../quality_guard/QualityGuard';
+
 export interface VideoFrame {
   timestamp: number;
   imageBase64: string;
+  brightness: QualityResult;
+  blur: QualityResult;
 }
 
 export class VideoCapture {
@@ -43,12 +47,20 @@ export class VideoCapture {
       if (!this.ctx || !this.canvas) return;
 
       this.ctx.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      
+      // Perform image quality check using QualityGuard
+      const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+      const brightness = QualityGuard.checkBrightness(imageData);
+      const blur = QualityGuard.checkBlur(imageData);
+
       const dataUrl = this.canvas.toDataURL('image/jpeg', 0.7); // compress slightly
       const base64 = dataUrl.split(',')[1];
 
       const frame: VideoFrame = {
         timestamp: Date.now(),
-        imageBase64: base64
+        imageBase64: base64,
+        brightness,
+        blur
       };
 
       this.frameQueue.push(frame);
@@ -57,7 +69,7 @@ export class VideoCapture {
       }
     }, 500);
 
-    console.log('Video sliding window buffer capture started.');
+    console.log('Video sliding window buffer capture started with QualityGuard checks.');
   }
 
   public stopCapture() {
@@ -69,7 +81,7 @@ export class VideoCapture {
     console.log('Video sliding window buffer capture stopped.');
   }
 
-  public getAlignedFrames(speechStart: number, speechEnd: number): { startFrame: string | null; endFrame: string | null } {
+  public getAlignedFrames(speechStart: number, speechEnd: number): { startFrame: VideoFrame | null; endFrame: VideoFrame | null } {
     if (this.frameQueue.length === 0) return { startFrame: null, endFrame: null };
 
     // Find the frames closest to speech_start and speech_end
@@ -94,8 +106,8 @@ export class VideoCapture {
     }
 
     return {
-      startFrame: startFrame ? startFrame.imageBase64 : null,
-      endFrame: endFrame ? endFrame.imageBase64 : null
+      startFrame,
+      endFrame
     };
   }
 }

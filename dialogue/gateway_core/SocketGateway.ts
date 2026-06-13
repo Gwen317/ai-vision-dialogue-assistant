@@ -32,6 +32,8 @@ interface VADEndPayload {
   localText?: string;
   llmProvider?: string;
   ttsProvider?: string;
+  startFrame?: string;
+  endFrame?: string;
 }
 
 interface VADStartPayload {
@@ -211,6 +213,24 @@ export class SocketGateway {
           console.log(
             `VAD payload for ${socket.id}: audioBytes=${audioBuffer.byteLength}, audioMimeType=${audioMimeType}, speechStartedAt=${new Date(speechStartedAt).toISOString()}, speechEndedAt=${new Date(speechEndedAt).toISOString()}`
           );
+
+          // Inject aligned start and end frames to the session's timeline
+          if (payload?.startFrame) {
+            session.timeline.push({
+              type: 'image',
+              timestamp: speechStartedAt,
+              imageBase64: payload.startFrame
+            });
+            console.log(`Pushed start frame to session timeline at ${new Date(speechStartedAt).toISOString()}`);
+          }
+          if (payload?.endFrame) {
+            session.timeline.push({
+              type: 'image',
+              timestamp: speechEndedAt,
+              imageBase64: payload.endFrame
+            });
+            console.log(`Pushed end frame to session timeline at ${new Date(speechEndedAt).toISOString()}`);
+          }
 
           // Call Gemini router
           await ModelRouter.processInteraction(
