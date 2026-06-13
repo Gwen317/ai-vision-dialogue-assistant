@@ -46,6 +46,7 @@ interface TextQueryPayload {
   speechEndedAt?: number;
   llmProvider?: string;
   ttsProvider?: string;
+  imageFrame?: string;
 }
 
 interface Session {
@@ -163,6 +164,18 @@ export class SocketGateway {
           const speechEndedAt = payload.speechEndedAt ?? Date.now();
           const speechStartedAt = payload.speechStartedAt ?? speechEndedAt;
           session.audioChunks = [];
+
+          // Inject inline image frame into session if provided in text query payload
+          if (payload.imageFrame) {
+            const imageEvent: ImageFrameEvent = {
+              type: 'image',
+              timestamp: speechStartedAt,
+              imageBase64: payload.imageFrame
+            };
+            session.currentImageFrame = imageEvent;
+            session.timeline.push(imageEvent);
+            console.log(`Text query inline frame injected into session timeline`);
+          }
 
           await ModelRouter.processTextInteraction(
             socket,

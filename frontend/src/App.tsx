@@ -653,6 +653,31 @@ export default function App() {
       vadRef.current = vad;
       vad.start();
 
+      // Register local object detection callback to auto-trigger memory RAG retrieval
+      videoCaptureRef.current.registerOnObjectDetected((className, base64Frame) => {
+        // Only auto-trigger if the system is currently LISTENING (ready for interaction)
+        if (fsmRef.current.getCurrentState() === 'LISTENING') {
+          console.log(`[App] Auto-triggering RAG query for detected object: ${className}`);
+          
+          setTimeline(prev => [
+            ...prev,
+            {
+              id: 'user-detect-' + Date.now(),
+              role: 'user',
+              text: `[🔍 视觉检测] 我手里正拿着一个"${className}"，请根据当前画面，帮我检索并回忆有关它的情景记忆。`,
+              timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+            }
+          ]);
+
+          socketRef.current?.emit('text_query', {
+            text: `我手里拿着一个"${className}"，帮我回忆关于它的长程多模态情景记忆。`,
+            llmProvider: llmProviderRef.current,
+            ttsProvider: ttsProviderRef.current,
+            imageFrame: base64Frame
+          });
+        }
+      });
+
       // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks
       videoCaptureRef.current.startCapture(stream);
 

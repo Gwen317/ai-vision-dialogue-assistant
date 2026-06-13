@@ -1,3 +1,5 @@
+import '@tensorflow/tfjs';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import { QualityGuard, type QualityResult } from '../quality_guard/QualityGuard';
 
 export interface VideoFrame {
@@ -15,11 +17,22 @@ export class VideoCapture {
   private readonly maxQueueSize = 10; // 5 seconds sliding window (assuming 2fps)
   private captureIntervalId: any = null;
 
+  // Object Detection variables
+  private cocoModel: cocoSsd.ObjectDetection | null = null;
+  private isLoadingModel = false;
+  private onObjectDetectedCallback?: (className: string, base64Frame: string) => void = undefined;
+  private cooldowns: Map<string, number> = new Map();
+  private readonly cooldownMs = 15000; // 15 seconds cooldown per object class
+
   constructor() {
     this.canvas = document.createElement('canvas');
     this.canvas.width = 640;
     this.canvas.height = 480;
     this.ctx = this.canvas.getContext('2d');
+  }
+
+  public registerOnObjectDetected(callback: (className: string, base64Frame: string) => void) {
+    this.onObjectDetectedCallback = callback;
   }
 
   public async startCapture(stream: MediaStream) {
@@ -43,8 +56,24 @@ export class VideoCapture {
       };
     });
 
+    // Lazy-load the COCO-SSD object detection model in the background
+    if (!this.cocoModel && !this.isLoadingModel) {
+      this.isLoadingModel = true;
+      console.log('[VideoCapture] Loading COCO-SSD object detection model...');
+      cocoSsd.load()
+        .then((model) => {
+          this.cocoModel = model;
+          this.isLoadingModel = false;
+          console.log('[VideoCapture] COCO-SSD model loaded successfully.');
+        })
+        .catch((err) => {
+          this.isLoadingModel = false;
+          console.error('[VideoCapture] Failed to load COCO-SSD model:', err);
+        });
+    }
+
     // Start 500ms sliding window frame extraction
-    this.captureIntervalId = setInterval(() => {
+    this.captureIntervalId = setInterval(async () => {
       if (!this.ctx || !this.canvas) return;
 
       this.ctx.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
@@ -67,6 +96,31 @@ export class VideoCapture {
       this.frameQueue.push(frame);
       if (this.frameQueue.length > this.maxQueueSize) {
         this.frameQueue.shift(); // remove oldest frame
+      }
+
+      // If QualityGuard checks pass and model is loaded, run local object detection inference
+      if (brightness.passed && blur.passed && this.cocoModel) {
+        try {
+          const predictions = await this.cocoModel.detect(video);
+          
+          // Target typical everyday objects in the user's hand/feed
+          const targetClasses = ['cell phone', 'cup', 'bottle', 'scissors', 'book', 'keyboard', 'mouse', 'laptop', 'handbag', 'banana', 'apple', 'orange'];
+          
+          const match = predictions.find(p => targetClasses.includes(p.class) && p.score > 0.65);
+          if (match && this.onObjectDetectedCallback) {
+            const className = match.class;
+            const now = Date.now();
+            const lastAlert = this.cooldowns.get(className) || 0;
+            
+            if (now - lastAlert > this.cooldownMs) {
+              this.cooldowns.set(className, now);
+              console.log(`[VideoCapture] Detected target: "${className}" with confidence ${(match.score * 100).toFixed(0)}%`);
+              this.onObjectDetectedCallback(className, base64);
+            }
+          }
+        } catch (err) {
+          console.error('[VideoCapture] Object detection inference error:', err);
+        }
       }
     }, 500);
 
