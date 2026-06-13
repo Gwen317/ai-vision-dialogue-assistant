@@ -186,4 +186,21 @@ export class VideoCapture {
       endFrame
     };
   }
+
+  public getCroppedFrame(bbox: [number, number, number, number]): string | null {
+    if (!this.canvas) return null;
+    const [x, y, w, h] = bbox;
+    if (w <= 0 || h <= 0) return null;
+
+    // Create a temporary canvas for the cropped area
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = w;
+    cropCanvas.height = h;
+    const cropCtx = cropCanvas.getContext('2d');
+    if (!cropCtx) return null;
+
+    // Draw the cropped region from our main canvas onto the cropCanvas
+    cropCtx.drawImage(this.canvas, x, y, w, h, 0, 0, w, h);
+    return cropCanvas.toDataURL('image/jpeg', 0.95);
+  }
 }

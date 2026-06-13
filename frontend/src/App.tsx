@@ -934,6 +934,20 @@ export default function App() {
     }
   };
 
+  const handleScreenshotSave = (bbox: [number, number, number, number], className: string) => {
+    const dataUrl = videoCaptureRef.current.getCroppedFrame(bbox);
+    if (dataUrl) {
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `crop_${className.replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      alert('无法获取截屏，请确保摄像头已开启并正常识别中。');
+    }
+  };
+
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
       {!hasInteracted && (
@@ -1073,6 +1087,59 @@ export default function App() {
                 {appState === 'LISTENING' ? 'MIC RECORDING' : 'MIC MUTE'}
               </span>
             </div>
+          </div>
+
+          {/* 🔍 识别物品与截屏调试 */}
+          <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '15px', border: '1px solid rgba(0, 242, 254, 0.15)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <span style={{ fontSize: '11px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '5px' }}>
+              🔍 识别物品与截屏调试 (Manual Screenshot Debug)
+            </span>
+            {detectedObjects.length === 0 ? (
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, fontStyle: 'italic' }}>
+                当前未检测到任何物品，请将物品置于镜头前...
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                {detectedObjects.map((obj, i) => {
+                  const [x, y, w, h] = obj.bbox;
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '6px 12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div>
+                        <strong style={{ color: '#39ff14', fontSize: '14px' }}>{obj.class}</strong>
+                        <span style={{ color: '#94a3b8', fontSize: '12px', marginLeft: '8px' }}>
+                          置信度: {(obj.score * 100).toFixed(0)}%
+                        </span>
+                        <div style={{ color: '#64748b', fontSize: '10px', fontFamily: 'monospace', marginTop: '2px' }}>
+                          bbox: [{Math.round(x)}, {Math.round(y)}, {Math.round(w)}, {Math.round(h)}]
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => handleScreenshotSave(obj.bbox, obj.class)}
+                        style={{
+                          background: 'linear-gradient(135deg, #00f2fe, #4facfe)',
+                          color: '#000',
+                          border: 'none',
+                          padding: '4px 10px',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          boxShadow: '0 0 8px rgba(0, 242, 254, 0.4)',
+                          transition: 'transform 0.1s ease'
+                        }}
+                        onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.95)')}
+                        onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+                      >
+                        📸 截屏保存
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* User Transcription Box */}
