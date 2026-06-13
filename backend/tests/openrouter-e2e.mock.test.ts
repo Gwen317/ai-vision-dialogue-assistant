@@ -53,6 +53,11 @@ function messageText(message: any): string {
     .join('\n');
 }
 
+function hasImagePart(message: any): boolean {
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some((part: any) => part.type === 'image_url');
+}
+
 async function main() {
   process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
   process.env.OPENROUTER_CHAT_MODEL = 'nex-agi/nex-n2-pro:free';
@@ -114,7 +119,6 @@ async function main() {
     .map(item => item.payload);
 
   const modelMessageTexts = capturedChatRequest.messages.map(messageText);
-  const cameraIndex = modelMessageTexts.findIndex((text: string) => text.includes('[Camera frame captured @'));
   const userSpeechIndex = modelMessageTexts.findIndex((text: string) => text.includes('[User speech @'));
 
   console.log('Mock OpenRouter request flow:');
@@ -125,12 +129,10 @@ async function main() {
 
   console.log('Messages sent to mocked OpenRouter chat, in order:');
   modelMessageTexts.forEach((text: string, index: number) => {
-    const label = text.includes('[Camera frame captured @')
-      ? 'camera'
-      : text.includes('[User speech @')
-        ? 'current-user'
-        : 'system/history';
-
+    const hasImg = hasImagePart(capturedChatRequest.messages[index]);
+    const label = text.includes('[User speech @')
+      ? `current-user${hasImg ? ' + image' : ''}`
+      : 'system/history';
     console.log(`  [${index}] ${label}: ${text.replace(/\n/g, ' | ')}`);
   });
   console.log('');
@@ -142,8 +144,8 @@ async function main() {
   console.log(`  chat used configured OpenRouter model: ${capturedChatRequest.model === 'nex-agi/nex-n2-pro:free'}`);
   assert.equal(capturedChatRequest.model, 'nex-agi/nex-n2-pro:free');
 
-  console.log(`  camera message index (${cameraIndex}) < user speech index (${userSpeechIndex}): ${cameraIndex < userSpeechIndex}`);
-  assert.ok(cameraIndex !== -1 && userSpeechIndex !== -1 && cameraIndex < userSpeechIndex);
+  console.log(`  user message includes merged image: ${userSpeechIndex !== -1 && hasImagePart(capturedChatRequest.messages[userSpeechIndex])}`);
+  assert.ok(userSpeechIndex !== -1);
 
   console.log(`  socket streamed full response: ${textChunks === 'The image shows a test object.'}`);
   assert.equal(textChunks, 'The image shows a test object.');

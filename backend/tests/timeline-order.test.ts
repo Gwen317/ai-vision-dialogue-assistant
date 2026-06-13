@@ -17,6 +17,11 @@ function messageText(message: any): string {
     .join('\n');
 }
 
+function hasImagePart(message: any): boolean {
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some((part: any) => part.type === 'image_url');
+}
+
 const base = Date.UTC(2026, 5, 12, 10, 0, 0);
 const imageAt30s = base + 30_000;
 const userSpeechAt32s = base + 32_000;
@@ -48,7 +53,6 @@ const { messages } = buildTimelineMessages({
 });
 
 const orderedTexts = messages.map(messageText);
-const cameraIndex = orderedTexts.findIndex(text => text.includes('[Camera frame captured @'));
 const userSpeechIndex = orderedTexts.findIndex(text => text.includes('[User speech @'));
 const delayedAnswerIndex = orderedTexts.findIndex(text => text.includes('This answer finished later'));
 
@@ -61,22 +65,20 @@ console.log('');
 
 console.log('Messages sent to model, in order:');
 orderedTexts.forEach((text, index) => {
-  const label = text.includes('[Camera frame captured @')
-    ? 'camera'
-    : text.includes('[User speech @')
-      ? 'current-user'
-      : text.includes('This answer finished later')
-        ? 'late-model-answer'
-        : 'system/history';
-
+  const hasImg = hasImagePart(messages[index]);
+  const label = text.includes('[User speech @')
+    ? `current-user${hasImg ? ' + image' : ''}`
+    : text.includes('This answer finished later')
+      ? 'late-model-answer'
+      : 'system/history';
   console.log(`  [${index}] ${label}: ${text.replace(/\n/g, ' | ')}`);
 });
 console.log('');
 
 console.log('Assertions:');
 
-console.log(`  camera frame included: ${cameraIndex !== -1}`);
-assert.notEqual(cameraIndex, -1, 'camera frame should be included in model messages');
+console.log(`  current user speech includes image: ${userSpeechIndex !== -1 && hasImagePart(messages[userSpeechIndex])}`);
+assert.ok(userSpeechIndex !== -1 && hasImagePart(messages[userSpeechIndex]), 'latest image should be merged into current user message');
 
 console.log(`  current user speech included: ${userSpeechIndex !== -1}`);
 assert.notEqual(userSpeechIndex, -1, 'current user speech should be included in model messages');
@@ -84,8 +86,8 @@ assert.notEqual(userSpeechIndex, -1, 'current user speech should be included in 
 console.log(`  late 35s model answer excluded from current request: ${delayedAnswerIndex === -1}`);
 assert.equal(delayedAnswerIndex, -1, 'model answer after the current speech end should not be included');
 
-console.log(`  camera index (${cameraIndex}) < user speech index (${userSpeechIndex}): ${cameraIndex < userSpeechIndex}`);
-assert.ok(cameraIndex < userSpeechIndex, '30s camera frame must be ordered before 32s user speech');
+console.log(`  no standalone camera messages (merged into user msg): ${!orderedTexts.some(t => t.includes('[Camera frame captured @'))}`);
+assert.ok(!orderedTexts.some(t => t.includes('[Camera frame captured @')), 'no standalone camera messages — image merged into user message');
 
 console.log('');
 console.log('timeline-order test passed');

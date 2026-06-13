@@ -84,6 +84,18 @@ export default function App() {
   const [ttsProvider, setTtsProvider] = useState<string>(() => localStorage.getItem('tts_provider') || 'cosyvoice');
   const ttsProviderRef = useRef<string>(localStorage.getItem('tts_provider') || 'cosyvoice');
 
+  const resetAssistantStreamState = () => {
+    setAiResponse('');
+    speechQueueRef.current = [];
+    sentenceAccumulatorRef.current = '';
+    globalTextLengthRef.current = 0;
+    charOffsetRef.current = 0;
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+    isCosyVoiceActiveRef.current = false;
+  };
+
   useEffect(() => {
     interruptThresholdRef.current = interruptThreshold;
   }, [interruptThreshold]);
@@ -173,8 +185,16 @@ export default function App() {
       setTranscription(text);
       const cleanText = text.trim();
       if (cleanText) {
+        resetAssistantStreamState();
         setTimeline(prev => {
           const next = [...prev];
+          const lastModelIndex = next.map(m => m.role).lastIndexOf('model');
+          if (lastModelIndex !== -1 && next[lastModelIndex].isStreaming) {
+            next[lastModelIndex] = {
+              ...next[lastModelIndex],
+              isStreaming: false
+            };
+          }
           const tempIndex = next.findIndex(m => m.id === tempUserMsgIdRef.current);
           if (tempIndex !== -1) {
             // Replace the temporary message with the final backend-transcribed text

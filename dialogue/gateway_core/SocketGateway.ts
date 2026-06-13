@@ -7,7 +7,7 @@ interface ImageFrameEvent {
   imageBase64: string;
 }
 
-interface ConversationMessageEvent {
+export interface ConversationMessageEvent {
   type: 'message';
   timestamp: number;
   role: 'user' | 'model';
@@ -57,6 +57,7 @@ interface Session {
   currentImageFrame: ImageFrameEvent | null;
   timeline: TimelineEvent[];
   abortController: AbortController | null;
+  activeRequestId: number;
 }
 
 export class SocketGateway {
@@ -78,7 +79,8 @@ export class SocketGateway {
         isCapturingSpeech: false,
         currentImageFrame: null,
         timeline: [],
-        abortController: null
+        abortController: null,
+        activeRequestId: 0
       });
 
       // Handle incoming camera frame
@@ -101,6 +103,20 @@ export class SocketGateway {
           session.timeline = session.timeline
             .filter(event => event.type !== 'image' || event.timestamp >= cutoff)
             .slice(-40);
+
+          // Prune old message events to prevent unbounded growth (keep last 30)
+          const msgCount = session.timeline.filter(e => e.type === 'message').length;
+          if (msgCount > 30) {
+            let removed = 0;
+            const target = msgCount - 30;
+            session.timeline = session.timeline.filter(event => {
+              if (event.type === 'message' && removed < target) {
+                removed++;
+                return false;
+              }
+              return true;
+            });
+          }
         }
       });
 
@@ -159,6 +175,7 @@ export class SocketGateway {
         if (session.abortController) {
           session.abortController.abort();
         }
+        const requestId = ++session.activeRequestId;
         session.abortController = new AbortController();
 
         try {
@@ -196,7 +213,9 @@ export class SocketGateway {
           socket.emit('error', 'Error generating response. Please try again.');
           socket.emit('state_change', 'IDLE');
         } finally {
-          session.abortController = null;
+          if (session.activeRequestId === requestId) {
+            session.abortController = null;
+          }
         }
       });
 
@@ -213,6 +232,7 @@ export class SocketGateway {
         if (session.abortController) {
           session.abortController.abort();
         }
+        const requestId = ++session.activeRequestId;
         session.abortController = new AbortController();
 
         try {
@@ -273,7 +293,9 @@ export class SocketGateway {
             socket.emit('state_change', 'IDLE');
           }
         } finally {
-          session.abortController = null;
+          if (session.activeRequestId === requestId) {
+            session.abortController = null;
+          }
         }
       });
 
@@ -286,6 +308,7 @@ export class SocketGateway {
           // 1. Cancel ongoing LLM request
           if (session.abortController) {
             session.abortController.abort();
+            session.activeRequestId++;
             session.abortController = null;
           }
 
@@ -296,12 +319,19 @@ export class SocketGateway {
               .find((event): event is ConversationMessageEvent => event.type === 'message' && event.role === 'model');
 
             if (lastModelMsg && typeof lastModelMsg.parts[0]?.text === 'string') {
-              const originalText = lastModelMsg.parts[0].text;
-              if (data.offset > 0 && data.offset < originalText.length) {
-                lastModelMsg.parts[0].text = originalText.substring(0, data.offset);
+              const text = lastModelMsg.parts[0].text;
+
+              if (!text) {
+                // AI hasn't spoken yet — remove the empty placeholder entirely
+                session.timeline = session.timeline.filter(e => e !== lastModelMsg);
+                console.log(`Removed empty model message placeholder from timeline (interrupted before AI spoke).`);
+              } else {
+                if (data.offset > 0 && data.offset < text.length) {
+                  lastModelMsg.parts[0].text = text.substring(0, data.offset);
+                }
+                lastModelMsg.interrupted = true;
+                console.log(`Marked model message as interrupted at offset ${data.offset}, text: "${lastModelMsg.parts[0].text.substring(0, 50)}..."`);
               }
-              lastModelMsg.interrupted = true;
-              console.log(`Marked model message as interrupted at offset ${data.offset}, text: "${lastModelMsg.parts[0].text.substring(0, 50)}..."`);
             }
           }
 
@@ -318,6 +348,7 @@ export class SocketGateway {
           session.audioChunks = [];
           if (session.abortController) {
             session.abortController.abort();
+            session.activeRequestId++;
             session.abortController = null;
           }
         }

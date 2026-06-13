@@ -7,7 +7,7 @@ import ffmpegPath from 'ffmpeg-static';
 import OpenAI from 'openai';
 import { Socket } from 'socket.io';
 import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
-import type { TimelineEvent } from '../gateway_core/SocketGateway';
+import type { TimelineEvent, ConversationMessageEvent } from '../gateway_core/SocketGateway';
 import { CosyVoiceTtsClient } from './CosyVoiceTtsClient';
 
 type OpenRouterContentPart =
@@ -128,6 +128,22 @@ export function buildTimelineMessages({
     }
   ];
 
+  // Attach the latest image to the current user message (merged, not separate)
+  const imageEvents = timeline
+    .filter(event => event.type === 'image' && event.timestamp <= turnTiming.speechEndedAt)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const latestImage = imageEvents.at(-1) as Extract<TimelineEvent, { type: 'image' }> | undefined;
+  if (latestImage) {
+    currentParts.push({
+      type: 'image_url',
+      imageUrl: {
+        url: `data:image/jpeg;base64,${latestImage.imageBase64}`,
+        detail: 'low'
+      }
+    });
+  }
+
   const messages: ChatMessages[] = [
     {
       role: 'system',
@@ -135,88 +151,43 @@ export function buildTimelineMessages({
     }
   ];
 
-  const currentUserEvent: TimelineEvent = {
-    type: 'message',
-    timestamp: turnTiming.speechStartedAt,
-    role: 'user',
-    parts: currentParts
-  };
-
+  // Historical messages — text only, no images, sorted by event-time to maintain correct chronological order
   const historicalMessages = timeline
-    .filter(event => event.type === 'message' && event.timestamp <= turnTiming.speechEndedAt)
+    .filter((event): event is ConversationMessageEvent => event.type === 'message' && event.timestamp <= turnTiming.speechEndedAt)
+    .sort((a, b) => a.timestamp - b.timestamp)
     .slice(-6);
 
-  const imageEvents = timeline
-    .filter(event => event.type === 'image' && event.timestamp <= turnTiming.speechEndedAt)
-    .sort((a, b) => a.timestamp - b.timestamp);
+  for (const event of historicalMessages) {
+    let content = event.parts;
 
-  const selectedImages = new Map<number, TimelineEvent>();
-  imageEvents
-    .filter(event => event.timestamp <= turnTiming.speechStartedAt)
-    .slice(-2)
-    .forEach(event => selectedImages.set(event.timestamp, event));
-
-  const latestImageBeforeTurnEnd = imageEvents.at(-1);
-  if (latestImageBeforeTurnEnd) {
-    selectedImages.set(latestImageBeforeTurnEnd.timestamp, latestImageBeforeTurnEnd);
-  }
-
-  const contextEvents = [
-    ...historicalMessages,
-    ...selectedImages.values(),
-    currentUserEvent
-  ].sort((a, b) => {
-    if (a.timestamp !== b.timestamp) {
-      return a.timestamp - b.timestamp;
-    }
-
-    if (a.type === b.type) {
-      return 0;
-    }
-
-    return a.type === 'image' ? -1 : 1;
-  });
-
-  for (const event of contextEvents) {
-    if (event.type === 'message') {
-      let content = event.parts;
-
-      if ((event as any).interrupted && event.role === 'model') {
-        content = event.parts.map((part: any, idx: number) => {
-          if (idx === 0 && typeof part.text === 'string') {
-            return {
-              ...part,
-              text: part.text + '\n\n[System: Your previous response was interrupted by the user at this point. Please continue your reasoning from exactly where you left off, seamlessly incorporating the user\'s new input below. Do not repeat what you already said — just continue from the breakpoint.]'
-            };
-          }
-          return part;
-        });
-      }
-
-      messages.push({
-        role: event.role === 'model' ? 'assistant' : 'user',
-        content
+    if ((event as any).interrupted && event.role === 'model') {
+      content = event.parts.map((part: any, idx: number) => {
+        if (idx === 0 && typeof part.text === 'string') {
+          return {
+            ...part,
+            text: part.text + '\n\n[System: Your previous response was interrupted by the user at this point. Please continue your reasoning from exactly where you left off, seamlessly incorporating the user\'s new input below. Do not repeat what you already said — just continue from the breakpoint.]'
+          };
+        }
+        return part;
       });
-      continue;
+    }
+
+    // Strip image parts from historical messages to keep clean text-only history
+    if (Array.isArray(content)) {
+      content = content.filter((part: any) => !part.type || part.type !== 'image_url');
     }
 
     messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: `[Camera frame captured @ ${new Date(event.timestamp).toISOString()}]`
-        },
-        {
-          type: 'image_url',
-          imageUrl: {
-            url: `data:image/jpeg;base64,${event.imageBase64}`,
-            detail: 'low'
-          }
-        }
-      ]
+      role: event.role === 'model' ? 'assistant' : 'user',
+      content
     });
   }
+
+  // Current user message with merged image (text + image in ONE message)
+  messages.push({
+    role: 'user',
+    content: currentParts
+  });
 
   return { messages, currentParts };
 }
@@ -513,10 +484,22 @@ export class ModelRouter {
     // Emit the transcribed text back to the client immediately
     socket.emit('user_transcription', userSpeech);
 
+    // Guard: abort during STT
+    if (signal.aborted) {
+      console.log('Aborted during transcription, skipping timeline write.');
+      return;
+    }
+
     // 2. Query Long-Term Multimodal Episodic Memory
     console.log('Querying episodic memory...');
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
+
+    // Guard: abort during memory query
+    if (signal.aborted) {
+      console.log('Aborted during memory query, skipping timeline write.');
+      return;
+    }
 
     // 3. Construct System Instruction / Prompt with memory context
     let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
@@ -533,6 +516,12 @@ export class ModelRouter {
       timeline,
       turnTiming
     });
+
+    // Guard: abort before writing to timeline
+    if (signal.aborted) {
+      console.log('Aborted before timeline write, skipping.');
+      return;
+    }
 
     // 4.1 Write user message to timeline BEFORE streaming so interrupt handler can see it.
     timeline.push({
@@ -567,6 +556,11 @@ export class ModelRouter {
       console.error(message, err);
       socket.emit('error', message);
       socket.emit('state_change', 'IDLE');
+      return;
+    }
+
+    if (signal.aborted) {
+      console.log('Aborted after LLM stream setup, skipping.');
       return;
     }
 
@@ -667,6 +661,11 @@ export class ModelRouter {
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
 
+    if (signal.aborted) {
+      console.log('Text query aborted during memory query.');
+      return;
+    }
+
     let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
@@ -679,6 +678,11 @@ export class ModelRouter {
       timeline,
       turnTiming
     });
+
+    if (signal.aborted) {
+      console.log('Text query aborted before timeline write.');
+      return;
+    }
 
     timeline.push({
       type: 'message',
@@ -709,6 +713,11 @@ export class ModelRouter {
       console.error(message, err);
       socket.emit('error', message);
       socket.emit('state_change', 'IDLE');
+      return;
+    }
+
+    if (signal.aborted) {
+      console.log('Text query aborted after LLM stream setup.');
       return;
     }
 

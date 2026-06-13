@@ -29,7 +29,7 @@ export class VideoCapture {
     this.canvas = document.createElement('canvas');
     this.canvas.width = 640;
     this.canvas.height = 480;
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
   }
 
   public registerOnObjectDetected(callback: (className: string, base64Frame: string) => void) {
