@@ -8,6 +8,7 @@ import OpenAI from 'openai';
 import { Socket } from 'socket.io';
 import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
 import type { TimelineEvent } from '../gateway_core/SocketGateway';
+import { CosyVoiceTtsClient } from './CosyVoiceTtsClient';
 
 type OpenRouterContentPart =
   | { type: 'text'; text: string }
@@ -206,9 +207,59 @@ export function buildTimelineMessages({
   return { messages, currentParts };
 }
 
+function prepareMessagesForModel(messages: any[], modelName: string): any[] {
+  const isVisionModel = modelName.toLowerCase().includes('vl') || modelName.toLowerCase().includes('vision');
+  
+  return messages.map(msg => {
+    if (typeof msg.content === 'string') {
+      return msg;
+    }
+    if (Array.isArray(msg.content)) {
+      const parts = msg.content.map((part: any) => {
+        if (part.type === 'image_url') {
+          if (!isVisionModel) {
+            // Strip image part if model is not a vision model
+            return null;
+          }
+          if (part.imageUrl) {
+            return {
+              type: 'image_url',
+              image_url: {
+                url: part.imageUrl.url,
+                detail: part.imageUrl.detail || 'low'
+              }
+            };
+          }
+        }
+        if (part && typeof part === 'object' && part.text && !part.type) {
+          return {
+            type: 'text',
+            text: part.text
+          };
+        }
+        return part;
+      }).filter(Boolean);
+
+      // If all content parts are stripped, return a placeholder text
+      if (parts.length === 0) {
+        return { role: msg.role, content: '[Image omitted]' };
+      }
+      
+      // If there is only one text part left, simplify it to a string for cleaner payload
+      if (parts.length === 1 && parts[0].type === 'text') {
+        return { role: msg.role, content: parts[0].text };
+      }
+
+      return { role: msg.role, content: parts };
+    }
+    return msg;
+  });
+}
+
 export class ModelRouter {
   private static openrouter: any = null;
   private static speechTranscriber: ((audioBuffer: Buffer) => Promise<string>) | null = null;
+  private static ttsClient = new CosyVoiceTtsClient();
 
   public static setOpenRouterForTest(openrouter: any) {
     this.openrouter = openrouter;
@@ -229,6 +280,71 @@ export class ModelRouter {
     return this.openrouter;
   }
 
+  private static async getLlmStream(
+    messages: any[],
+    userSpeech: string,
+    overrideLlmProvider?: string
+  ): Promise<{ stream: any; modelName: string }> {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
+
+    const complexKeywords = ['debug', 'code', 'math', 'solve', 'circuit', 'program', 'algorithm', 'explain in detail', 'analyze'];
+    const lowerSpeech = userSpeech.toLowerCase();
+    const isReasoning = complexKeywords.some(keyword => lowerSpeech.includes(keyword));
+
+    if (useDashScope) {
+      const modelName = isReasoning
+        ? (process.env.DASHSCOPE_REASONING_MODEL || 'qwen-vl-max')
+        : (process.env.DASHSCOPE_CHAT_MODEL || 'qwen-vl-plus');
+      
+      console.log(`Routing to Aliyun DashScope model: ${modelName}`);
+      const client = new OpenAI({
+        apiKey: dashscopeKey,
+        baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+      });
+
+      const preparedMessages = prepareMessagesForModel(messages, modelName);
+
+      const stream = await client.chat.completions.create({
+        model: modelName,
+        messages: preparedMessages,
+        stream: true,
+        stream_options: {
+          include_usage: true
+        }
+      });
+
+      return { stream, modelName };
+    } else {
+      const modelName = isReasoning
+        ? (process.env.OPENROUTER_REASONING_MODEL || process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free')
+        : (process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free');
+
+      console.log(`Routing to OpenRouter model: ${modelName}`);
+      const openrouter = await this.getOpenRouter();
+      const preparedMessages = prepareMessagesForModel(messages, modelName);
+
+      const stream = await openrouter.chat.send({
+        chatRequest: {
+          model: modelName,
+          messages: preparedMessages,
+          stream: true,
+          reasoning: {
+            effort: 'medium'
+          },
+          streamOptions: {
+            includeUsage: true
+          }
+        }
+      });
+
+      return { stream, modelName };
+    }
+  }
+
   public static async processInteraction(
     socket: Socket,
     audioBuffer: Buffer,
@@ -237,10 +353,18 @@ export class ModelRouter {
     timeline: TimelineEvent[],
     turnTiming: TurnTiming,
     signal: AbortSignal,
-    localText?: string
+    localText?: string,
+    overrideLlmProvider?: string,
+    overrideTtsProvider?: string
   ): Promise<void> {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey || apiKey === 'mock' || apiKey.startsWith('your_')) {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const hasDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
+    const hasOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_');
+
+    if (!hasDashScope && !hasOpenRouter) {
       console.log('--- ModelRouter: Running in MOCK MODE ---');
       
       // Simulate transcription feedback using local ASR text for highly responsive testing
@@ -274,22 +398,74 @@ export class ModelRouter {
       return;
     }
 
-    const openrouter = await this.getOpenRouter();
-
     // 1. Transcribe the user's audio
     console.log('Transcribing user audio...');
     let userSpeech = '';
+    const hasDashscope = dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
+    const hasMolifangzhou = process.env.MOLIFANGZHOU_API_KEY && 
+                            process.env.MOLIFANGZHOU_API_KEY !== 'mock' && 
+                            !process.env.MOLIFANGZHOU_API_KEY.startsWith('your_');
+
     try {
-      userSpeech = this.speechTranscriber
-        ? await this.speechTranscriber(audioBuffer)
-        : await transcribeWithMolifangzhou(audioBuffer, audioMimeType);
+      if (audioBuffer.byteLength === 0) {
+        if (localText) {
+          userSpeech = localText;
+        } else {
+          console.log('Empty audio buffer and no local text available.');
+          socket.emit('user_transcription', '');
+          socket.emit('state_change', 'IDLE');
+          return;
+        }
+      } else if (this.speechTranscriber) {
+        userSpeech = await this.speechTranscriber(audioBuffer);
+      } else if (hasDashscope) {
+        console.log('Using Aliyun DashScope (qwen3-asr-flash) for transcription...');
+        const client = new OpenAI({
+          apiKey: dashscopeKey,
+          baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        });
+
+        const base64Data = audioBuffer.toString('base64');
+        const mime = audioMimeType.split(';')[0];
+        const dataUri = `data:${mime};base64,${base64Data}`;
+
+        const response = await client.chat.completions.create({
+          model: 'qwen3-asr-flash',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_audio',
+                  input_audio: {
+                    data: dataUri
+                  }
+                } as any
+              ]
+            }
+          ]
+        });
+        userSpeech = (response.choices[0]?.message?.content || '').trim();
+      } else if (hasMolifangzhou) {
+        userSpeech = await transcribeWithMolifangzhou(audioBuffer, audioMimeType);
+      } else if (localText) {
+        console.log(`No backend STT keys configured. Falling back to local ASR text: "${localText}"`);
+        userSpeech = localText;
+      } else {
+        throw new Error('No STT keys configured and no local ASR text fallback available.');
+      }
     } catch (err: any) {
-      const message = err instanceof Error ? err.message : 'Molifangzhou STT failed.';
-      console.error(message, err);
-      socket.emit('user_transcription', '');
-      socket.emit('error', message);
-      socket.emit('state_change', 'IDLE');
-      return;
+      if (localText) {
+        console.log(`STT failed, falling back to local ASR text: "${localText}". Error was:`, err);
+        userSpeech = localText;
+      } else {
+        const message = err instanceof Error ? err.message : 'Speech transcription failed.';
+        console.error(message, err);
+        socket.emit('user_transcription', '');
+        socket.emit('error', message);
+        socket.emit('state_change', 'IDLE');
+        return;
+      }
     }
 
     console.log(`Transcribed text: "${userSpeech}"`);
@@ -308,28 +484,16 @@ export class ModelRouter {
     console.log('Querying episodic memory...');
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
-    
-    // 3. Determine Model Routing (Tier 2 vs Tier 3)
-    let selectedModelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
-    const complexKeywords = ['debug', 'code', 'math', 'solve', 'circuit', 'program', 'algorithm', 'explain in detail', 'analyze'];
-    const lowerSpeech = userSpeech.toLowerCase();
-    
-    if (complexKeywords.some(keyword => lowerSpeech.includes(keyword))) {
-      selectedModelName = process.env.OPENROUTER_REASONING_MODEL || selectedModelName;
-      console.log(`Routing query to reasoning model: ${selectedModelName}`);
-    } else {
-      console.log(`Routing query to chat model: ${selectedModelName}`);
-    }
 
-    // 4. Construct System Instruction / Prompt with memory context
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely.';
+    // 3. Construct System Instruction / Prompt with memory context
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)';
     
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000); // Minutes
       systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
     }
 
-    // 5. Assemble current payload parts in event-time order.
+    // 4. Assemble current payload parts in event-time order.
     const { messages, currentParts } = buildTimelineMessages({
       systemInstruction,
       userSpeech,
@@ -337,25 +501,27 @@ export class ModelRouter {
       turnTiming
     });
 
-    // 6. Generate content stream
+    // 5. Generate content stream
     console.log('Generating streaming content...');
     socket.emit('state_change', 'SPEAKING');
     
-    const responseStream = await openrouter.chat.send({
-      chatRequest: {
-        model: selectedModelName,
-        messages,
-        stream: true,
-        reasoning: {
-          effort: 'medium'
-        },
-        streamOptions: {
-          includeUsage: true
-        }
-      }
-    });
+    let responseStream;
+    let selectedModelName = '';
+    try {
+      const result = await this.getLlmStream(messages, userSpeech, overrideLlmProvider);
+      responseStream = result.stream;
+      selectedModelName = result.modelName;
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : 'LLM stream generation failed.';
+      console.error(message, err);
+      socket.emit('error', message);
+      socket.emit('state_change', 'IDLE');
+      return;
+    }
 
     let fullResponseText = '';
+    let sentenceBuffer = '';
+    let ttsIndex = 0;
 
     for await (const chunk of responseStream) {
       // Check for abort signal from client interruption
@@ -365,7 +531,7 @@ export class ModelRouter {
       }
       
       if (chunk.error) {
-        throw new Error(`OpenRouter stream error ${chunk.error.code}: ${chunk.error.message}`);
+        throw new Error(`Stream error ${chunk.error.code}: ${chunk.error.message}`);
       }
 
       const chunkText = chunk.choices[0]?.delta?.content ?? '';
@@ -374,12 +540,36 @@ export class ModelRouter {
       // Stream text chunk to client
       if (chunkText) {
         socket.emit('text_chunk', chunkText);
+        sentenceBuffer += chunkText;
+
+        const delimiters = ['。', '！', '？', '；', '.', '!', '?', '\n'];
+        for (const delim of delimiters) {
+          if (sentenceBuffer.includes(delim)) {
+            const parts = sentenceBuffer.split(delim);
+            const clause = (parts[0] + delim).trim();
+            sentenceBuffer = parts.slice(1).join(delim);
+
+            if (clause) {
+              const currentIndex = ttsIndex++;
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, overrideTtsProvider);
+            }
+            break;
+          }
+        }
       }
 
-      const reasoningTokens = chunk.usage?.completionTokensDetails?.reasoningTokens;
+      const reasoningTokens = chunk.usage?.completionTokensDetails?.reasoningTokens ||
+                             chunk.usage?.completion_tokens_details?.reasoning_tokens;
       if (reasoningTokens) {
-        console.log(`OpenRouter reasoning tokens: ${reasoningTokens}`);
+        console.log(`Reasoning tokens: ${reasoningTokens}`);
       }
+    }
+
+    // Process any remaining text in the buffer
+    const remaining = sentenceBuffer.trim();
+    if (remaining) {
+      const currentIndex = ttsIndex++;
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, overrideTtsProvider);
     }
 
     console.log('Stream generation completed.');
@@ -400,7 +590,7 @@ export class ModelRouter {
       parts: [{ text: fullResponseText }]
     });
 
-    // 7. Save to Long-Term Episodic Memory in the background (non-blocking)
+    // 6. Save to Long-Term Episodic Memory in the background (non-blocking)
     EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
       .catch(err => console.error('Background memory recording failed:', err));
 
@@ -413,10 +603,18 @@ export class ModelRouter {
     imageFrame: ImageFrameEvent | null,
     timeline: TimelineEvent[],
     turnTiming: TurnTiming,
-    signal: AbortSignal
+    signal: AbortSignal,
+    overrideLlmProvider?: string,
+    overrideTtsProvider?: string
   ): Promise<void> {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey || apiKey === 'mock' || apiKey.startsWith('your_')) {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const hasDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
+    const hasOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_');
+
+    if (!hasDashScope && !hasOpenRouter) {
       socket.emit('user_transcription', userSpeech);
       socket.emit('state_change', 'SPEAKING');
       socket.emit('text_chunk', `Mock response to: ${userSpeech}`);
@@ -424,25 +622,13 @@ export class ModelRouter {
       return;
     }
 
-    const openrouter = await this.getOpenRouter();
     socket.emit('user_transcription', userSpeech);
 
     console.log('Querying episodic memory...');
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
 
-    let selectedModelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
-    const complexKeywords = ['debug', 'code', 'math', 'solve', 'circuit', 'program', 'algorithm', 'explain in detail', 'analyze'];
-    const lowerSpeech = userSpeech.toLowerCase();
-
-    if (complexKeywords.some(keyword => lowerSpeech.includes(keyword))) {
-      selectedModelName = process.env.OPENROUTER_REASONING_MODEL || selectedModelName;
-      console.log(`Routing text query to reasoning model: ${selectedModelName}`);
-    } else {
-      console.log(`Routing text query to chat model: ${selectedModelName}`);
-    }
-
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely.';
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)';
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
       systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
@@ -458,21 +644,24 @@ export class ModelRouter {
     console.log('Generating streaming content from text query...');
     socket.emit('state_change', 'SPEAKING');
 
-    const responseStream = await openrouter.chat.send({
-      chatRequest: {
-        model: selectedModelName,
-        messages,
-        stream: true,
-        reasoning: {
-          effort: 'medium'
-        },
-        streamOptions: {
-          includeUsage: true
-        }
-      }
-    });
+    let responseStream;
+    let selectedModelName = '';
+    try {
+      const result = await this.getLlmStream(messages, userSpeech, overrideLlmProvider);
+      responseStream = result.stream;
+      selectedModelName = result.modelName;
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : 'LLM stream generation failed.';
+      console.error(message, err);
+      socket.emit('error', message);
+      socket.emit('state_change', 'IDLE');
+      return;
+    }
 
     let fullResponseText = '';
+    let sentenceBuffer = '';
+    let ttsIndex = 0;
+
     for await (const chunk of responseStream) {
       if (signal.aborted) {
         console.log('Text query stream generation aborted.');
@@ -480,14 +669,37 @@ export class ModelRouter {
       }
 
       if (chunk.error) {
-        throw new Error(`OpenRouter stream error ${chunk.error.code}: ${chunk.error.message}`);
+        throw new Error(`Stream error ${chunk.error.code}: ${chunk.error.message}`);
       }
 
       const chunkText = chunk.choices[0]?.delta?.content ?? '';
       fullResponseText += chunkText;
       if (chunkText) {
         socket.emit('text_chunk', chunkText);
+        sentenceBuffer += chunkText;
+
+        const delimiters = ['。', '！', '？', '；', '.', '!', '?', '\n'];
+        for (const delim of delimiters) {
+          if (sentenceBuffer.includes(delim)) {
+            const parts = sentenceBuffer.split(delim);
+            const clause = (parts[0] + delim).trim();
+            sentenceBuffer = parts.slice(1).join(delim);
+
+            if (clause) {
+              const currentIndex = ttsIndex++;
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, overrideTtsProvider);
+            }
+            break;
+          }
+        }
       }
+    }
+
+    // Process any remaining text in the buffer
+    const remaining = sentenceBuffer.trim();
+    if (remaining) {
+      const currentIndex = ttsIndex++;
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, overrideTtsProvider);
     }
 
     const modelAnsweredAt = Date.now();
@@ -508,5 +720,36 @@ export class ModelRouter {
       .catch(err => console.error('Background memory recording failed:', err));
 
     socket.emit('state_change', 'IDLE');
+  }
+
+  private static async synthesizeAndEmit(
+    socket: Socket,
+    text: string,
+    index: number,
+    signal: AbortSignal,
+    overrideTtsProvider?: string
+  ): Promise<void> {
+    if (overrideTtsProvider === 'browser') {
+      return;
+    }
+    if (!this.ttsClient.isConfigured()) {
+      return;
+    }
+
+    try {
+      const voiceId = process.env.DASHSCOPE_VOICE_ID || 'longanyang';
+      const audioBuffer = await this.ttsClient.synthesize(text, voiceId);
+
+      if (signal.aborted) {
+        return;
+      }
+
+      socket.emit('audio_tts_chunk', {
+        audio: audioBuffer,
+        index
+      });
+    } catch (err) {
+      console.error(`Failed to synthesize text: "${text}", error:`, err);
+    }
   }
 }

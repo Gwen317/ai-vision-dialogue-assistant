@@ -30,6 +30,8 @@ interface VADEndPayload {
   speechStartedAt?: number;
   speechEndedAt?: number;
   localText?: string;
+  llmProvider?: string;
+  ttsProvider?: string;
 }
 
 interface VADStartPayload {
@@ -40,6 +42,8 @@ interface TextQueryPayload {
   text: string;
   speechStartedAt?: number;
   speechEndedAt?: number;
+  llmProvider?: string;
+  ttsProvider?: string;
 }
 
 interface Session {
@@ -167,7 +171,9 @@ export class SocketGateway {
               speechStartedAt,
               speechEndedAt
             },
-            session.abortController.signal
+            session.abortController.signal,
+            payload.llmProvider,
+            payload.ttsProvider
           );
         } catch (err) {
           console.error('Error processing text query:', err);
@@ -218,7 +224,9 @@ export class SocketGateway {
               speechEndedAt
             },
             session.abortController.signal,
-            localText
+            localText,
+            payload?.llmProvider,
+            payload?.ttsProvider
           );
         } catch (err: any) {
           if (err.name === 'AbortError') {

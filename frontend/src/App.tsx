@@ -66,6 +66,48 @@ export default function App() {
   const charOffsetRef = useRef<number>(0);
   const sentenceAccumulatorRef = useRef<string>('');
   const globalTextLengthRef = useRef<number>(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioQueueRef = useRef<{ index: number; audio: ArrayBuffer }[]>([]);
+  const nextPlayIndexRef = useRef<number>(0);
+  const isAudioPlayingRef = useRef<boolean>(false);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const isCosyVoiceActiveRef = useRef<boolean>(false);
+  const [interruptThreshold, setInterruptThreshold] = useState<number>(0.85);
+  const interruptThresholdRef = useRef<number>(0.85);
+  const speechProbabilityRef = useRef<number>(0);
+  const [llmProvider, setLlmProvider] = useState<string>(() => localStorage.getItem('llm_provider') || 'dashscope');
+  const llmProviderRef = useRef<string>(localStorage.getItem('llm_provider') || 'dashscope');
+  const [ttsProvider, setTtsProvider] = useState<string>(() => localStorage.getItem('tts_provider') || 'cosyvoice');
+  const ttsProviderRef = useRef<string>(localStorage.getItem('tts_provider') || 'cosyvoice');
+
+  useEffect(() => {
+    interruptThresholdRef.current = interruptThreshold;
+  }, [interruptThreshold]);
+
+  useEffect(() => {
+    llmProviderRef.current = llmProvider;
+    localStorage.setItem('llm_provider', llmProvider);
+  }, [llmProvider]);
+
+  useEffect(() => {
+    ttsProviderRef.current = ttsProvider;
+    localStorage.setItem('tts_provider', ttsProvider);
+
+    // Clean up all playing speech when switching TTS engines
+    window.speechSynthesis.cancel();
+    speechQueueRef.current = [];
+    isSpeakingRef.current = false;
+    
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+  }, [ttsProvider]);
 
   useEffect(() => {
     // 1. Initialize WebSocket Connection
@@ -82,6 +124,19 @@ export default function App() {
       console.log('Disconnected from backend gateway');
     });
 
+    socket.on('audio_tts_chunk', (chunk: { audio: ArrayBuffer; index: number }) => {
+      if (ttsProviderRef.current !== 'cosyvoice') {
+        return; // Ignore backend audio chunks if cosyvoice is disabled
+      }
+      console.log(`Received audio TTS chunk index ${chunk.index}, bytes=${chunk.audio.byteLength}`);
+      isCosyVoiceActiveRef.current = true;
+      audioQueueRef.current.push({ index: chunk.index, audio: chunk.audio });
+      audioQueueRef.current.sort((a, b) => a.index - b.index);
+      if (!isAudioPlayingRef.current) {
+        playNextAudioChunk();
+      }
+    });
+
     // Handle state change from backend
     socket.on('state_change', (state: AppState) => {
       fsmRef.current.transitionTo(state);
@@ -90,7 +145,10 @@ export default function App() {
           const next = [...prev];
           const lastMsgIndex = next.map(m => m.role).lastIndexOf('model');
           if (lastMsgIndex !== -1 && next[lastMsgIndex].isStreaming) {
-            next[lastMsgIndex].isStreaming = false;
+            next[lastMsgIndex] = {
+              ...next[lastMsgIndex],
+              isStreaming: false
+            };
           }
           return next;
         });
@@ -133,9 +191,13 @@ export default function App() {
 
       setTimeline(prev => {
         const next = [...prev];
-        const lastMsg = next[next.length - 1];
+        const lastIndex = next.length - 1;
+        const lastMsg = next[lastIndex];
         if (lastMsg && lastMsg.role === 'model' && lastMsg.isStreaming) {
-          lastMsg.text += chunk;
+          next[lastIndex] = {
+            ...lastMsg,
+            text: lastMsg.text + chunk
+          };
         } else {
           next.push({
             id: 'model-' + Date.now(),
@@ -152,14 +214,26 @@ export default function App() {
     // 2. FSM state change listener
     fsmRef.current.registerStateListener((state) => {
       setAppState(state);
-      if (state === 'LISTENING') {
-        // Stop any current text-to-speech playing
+      if (state === 'LISTENING' || state === 'IDLE') {
+        // Stop any current text-to-speech playing (browser)
         window.speechSynthesis.cancel();
         speechQueueRef.current = [];
         isSpeakingRef.current = false;
         charOffsetRef.current = 0;
         sentenceAccumulatorRef.current = '';
         globalTextLengthRef.current = 0;
+
+        // Stop Aliyun CosyVoice playback
+        isCosyVoiceActiveRef.current = false;
+        if (audioSourceRef.current) {
+          try {
+            audioSourceRef.current.stop();
+          } catch (e) {}
+          audioSourceRef.current = null;
+        }
+        audioQueueRef.current = [];
+        nextPlayIndexRef.current = 0;
+        isAudioPlayingRef.current = false;
       }
     });
 
@@ -196,6 +270,18 @@ export default function App() {
     setAiResponse('');
     localSpeechTextRef.current = '';
     tempUserMsgIdRef.current = null;
+
+    isCosyVoiceActiveRef.current = false;
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -235,7 +321,10 @@ export default function App() {
         const next = [...prev];
         const lastMsgIndex = next.map(m => m.id).lastIndexOf(tempUserMsgIdRef.current || '');
         if (lastMsgIndex !== -1) {
-          next[lastMsgIndex].text = currentText;
+          next[lastMsgIndex] = {
+            ...next[lastMsgIndex],
+            text: currentText
+          };
         } else {
           const newId = 'user-temp-' + Date.now();
           tempUserMsgIdRef.current = newId;
@@ -276,10 +365,13 @@ export default function App() {
 
   // Handle incoming tokens from LLM and assemble sentences for TTS
   const handleIncomingToken = (token: string) => {
+    if (ttsProviderRef.current === 'cosyvoice') {
+      return;
+    }
     sentenceAccumulatorRef.current += token;
     
     // Check if the accumulated tokens end with a sentence delimiter
-    const delimiters = ['。', '，', '！', '？', '；', '.', ',', '!', '?', '\n'];
+    const delimiters = ['。', '！', '？', '；', '.', '!', '?', '\n'];
     const text = sentenceAccumulatorRef.current;
     
     // Look for punctuation that signals a complete clause
@@ -337,10 +429,47 @@ export default function App() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const playNextAudioChunk = async () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+
+    const targetIdx = audioQueueRef.current.findIndex(item => item.index === nextPlayIndexRef.current);
+    if (targetIdx === -1) {
+      isAudioPlayingRef.current = false;
+      return;
+    }
+
+    isAudioPlayingRef.current = true;
+    const { index, audio } = audioQueueRef.current.splice(targetIdx, 1)[0];
+    nextPlayIndexRef.current = index + 1;
+
+    try {
+      const decodedBuffer = await ctx.decodeAudioData(audio.slice(0));
+      const source = ctx.createBufferSource();
+      source.buffer = decodedBuffer;
+      source.connect(ctx.destination);
+      audioSourceRef.current = source;
+
+      source.onended = () => {
+        audioSourceRef.current = null;
+        playNextAudioChunk();
+      };
+
+      source.start(0);
+    } catch (e) {
+      console.error(`Error decoding or playing audio chunk index ${index}:`, e);
+      playNextAudioChunk();
+    }
+  };
+
   // Turn on/off Microphone, start local VAD (Fallback RMS Threshold VAD)
   const startRecordingSession = async () => {
     // Initialize Web Audio context
     acousticProcessorRef.current.init();
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -384,6 +513,14 @@ export default function App() {
         onnxWASMBasePath: "/vad/",
         onSpeechStart: () => {
           console.log("VAD: Speech started");
+          
+          // Check if AI is speaking and if we should suppress the interruption trigger (potential echo)
+          const isAIPaying = isSpeakingRef.current || isAudioPlayingRef.current;
+          if (isAIPaying && speechProbabilityRef.current < interruptThresholdRef.current) {
+            console.log(`VAD start ignored (potential echo): probability ${speechProbabilityRef.current} is below ${(interruptThresholdRef.current * 100).toFixed(0)}% during AI playback`);
+            return;
+          }
+
           setIsUserSpeaking(true);
           const speechStartedAt = Date.now();
           currentSpeechStartedAtRef.current = speechStartedAt;
@@ -402,9 +539,20 @@ export default function App() {
 
           socketRef.current?.emit('vad_start', { speechStartedAt });
           // If AI is playing, this is an interruption!
-          if (isSpeakingRef.current) {
+          if (isSpeakingRef.current || isAudioPlayingRef.current) {
             console.log('Interruption detected!');
             window.speechSynthesis.cancel();
+
+            if (audioSourceRef.current) {
+              try {
+                audioSourceRef.current.stop();
+              } catch (e) {}
+              audioSourceRef.current = null;
+            }
+            audioQueueRef.current = [];
+            nextPlayIndexRef.current = 0;
+            isAudioPlayingRef.current = false;
+
             socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
 
             // Frontend timeline truncation
@@ -414,8 +562,11 @@ export default function App() {
               if (lastMsgIndex !== -1) {
                 const lastMsg = next[lastMsgIndex];
                 if (charOffsetRef.current < lastMsg.text.length) {
-                  lastMsg.text = lastMsg.text.substring(0, charOffsetRef.current) + "... [用户已打断]";
-                  lastMsg.isStreaming = false;
+                  next[lastMsgIndex] = {
+                    ...lastMsg,
+                    text: lastMsg.text.substring(0, charOffsetRef.current) + "... [用户已打断]",
+                    isStreaming: false
+                  };
                 }
               }
               return next;
@@ -436,10 +587,15 @@ export default function App() {
         },
         onSpeechEnd: () => {
           console.log("VAD: Speech ended");
+          if (!isRecordingSpeechRef.current) {
+            console.log("VAD end ignored: speech start was not recorded (ignored as potential echo)");
+            return;
+          }
           setIsUserSpeaking(false);
           triggerVADEnd();
         },
         onFrameProcessed: (probabilities) => {
+          speechProbabilityRef.current = probabilities.isSpeech;
           // Update speech probability directly in DOM to avoid React re-render lag at high frequency
           const probEl = document.getElementById('vad-rms');
           if (probEl) {
@@ -514,7 +670,9 @@ export default function App() {
       socketRef.current?.emit('vad_end', {
         speechStartedAt,
         speechEndedAt: endedAt,
-        localText: localSpeechTextRef.current
+        localText: localSpeechTextRef.current,
+        llmProvider: llmProviderRef.current,
+        ttsProvider: ttsProviderRef.current
       });
       isRecordingSpeechRef.current = false;
       mediaRecorderRef.current = null;
@@ -578,6 +736,18 @@ export default function App() {
 
   const stopSession = () => {
     window.speechSynthesis.cancel();
+
+    isCosyVoiceActiveRef.current = false;
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -719,24 +889,24 @@ export default function App() {
           </div>
 
           {/* Configuration Panel */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', padding: '10px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '15px', padding: '10px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
-                Acoustic Reverb
+                Acoustic Reverb (混响效果)
               </label>
               <select 
                 value={reverbPreset} 
                 onChange={handleReverbChange}
                 style={{ width: '100%', background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '8px', borderRadius: '4px', cursor: 'pointer' }}
               >
-                <option value="studio">录音棚模式 (Studio)</option>
-                <option value="living">客厅模式 (Living Room)</option>
-                <option value="hall">教堂大厅模式 (Hall)</option>
+                <option value="studio">录音棚 (Studio)</option>
+                <option value="living">客厅 (Living Room)</option>
+                <option value="hall">教堂大厅 (Hall)</option>
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
-                Lombard Volume Adapt
+                Lombard Volume Adapt (噪音自适应)
               </label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <input 
@@ -746,6 +916,85 @@ export default function App() {
                   style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                 />
                 <span style={{ fontSize: '13px', color: '#e2e8f0' }}>开启自适应噪音响度</span>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
+                LLM Provider (大模型提供商)
+              </label>
+              <select 
+                value={llmProvider} 
+                onChange={(e) => setLlmProvider(e.target.value)}
+                style={{ width: '100%', background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '8px', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                <option value="dashscope">阿里通义 (DashScope)</option>
+                <option value="openrouter">OpenRouter 官方</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '8px' }}>
+                TTS Engine (语音播放引擎)
+              </label>
+              <div style={{ display: 'flex', gap: '5px', background: '#1e293b', padding: '3px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                <button
+                  type="button"
+                  onClick={() => setTtsProvider('cosyvoice')}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    fontFamily: 'Outfit, sans-serif',
+                    fontWeight: 600,
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    background: ttsProvider === 'cosyvoice' ? 'var(--neon-cyan)' : 'transparent',
+                    color: ttsProvider === 'cosyvoice' ? 'var(--bg-dark)' : 'var(--text-muted)',
+                    boxShadow: ttsProvider === 'cosyvoice' ? '0 0 10px rgba(0, 242, 254, 0.4)' : 'none',
+                    transition: 'all 0.3s ease'
+                  }}
+                >
+                  阿里 CosyVoice
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTtsProvider('browser')}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    fontFamily: 'Outfit, sans-serif',
+                    fontWeight: 600,
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    background: ttsProvider === 'browser' ? 'var(--neon-purple)' : 'transparent',
+                    color: ttsProvider === 'browser' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: ttsProvider === 'browser' ? '0 0 10px rgba(168, 85, 247, 0.4)' : 'none',
+                    transition: 'all 0.3s ease'
+                  }}
+                >
+                  浏览器机械音
+                </button>
+              </div>
+            </div>
+            <div style={{ gridColumn: 'span 4', marginTop: '5px' }}>
+              <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
+                AI播音时打断概率阈值 (Interruption Threshold during Playback)
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <input 
+                  type="range" 
+                  min="0.5" 
+                  max="0.95" 
+                  step="0.05"
+                  value={interruptThreshold} 
+                  onChange={(e) => setInterruptThreshold(parseFloat(e.target.value))}
+                  style={{ flex: 1, cursor: 'pointer', accentColor: '#00f2fe' }}
+                />
+                <span style={{ fontSize: '14px', color: '#00f2fe', width: '50px', fontFamily: 'Orbitron, monospace', fontWeight: 'bold' }}>
+                  {(interruptThreshold * 100).toFixed(0)}%
+                </span>
               </div>
             </div>
           </div>
@@ -877,12 +1126,20 @@ export default function App() {
             </div>
             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
             <div>
-              ACTIVATION (激活阈值): <span style={{ color: '#ff007f', fontWeight: 'bold' }}>50.0%</span>
+              ACTIVATION (阈值 静默/打断): <span style={{ color: '#ff007f', fontWeight: 'bold' }}>50% / {(interruptThreshold * 100).toFixed(0)}%</span>
             </div>
             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
             <div>
-              MODEL (检测模型): <span style={{ color: '#39ff14', fontWeight: 'bold' }}>Silero VAD (ONNX)</span>
+              LLM ENGINE (大语言模型): <span style={{ color: '#00f2fe', fontWeight: 'bold' }}>{llmProvider === 'dashscope' ? 'Aliyun Qwen (通义)' : 'OpenRouter'}</span>
             </div>
+             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+             <div>
+               TTS ENGINE (语音播音): <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>{ttsProvider === 'cosyvoice' ? 'Aliyun CosyVoice' : 'Browser Native'}</span>
+             </div>
+             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+             <div>
+               MODEL (检测模型): <span style={{ color: '#39ff14', fontWeight: 'bold' }}>Silero VAD (ONNX)</span>
+             </div>
           </div>
 
           <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', marginBottom: 0, fontFamily: 'sans-serif' }}>
