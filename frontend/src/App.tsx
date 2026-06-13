@@ -690,11 +690,11 @@ export default function App() {
         }
       });
 
-      // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks
-      if (cameraStreamRef.current) {
-        videoCaptureRef.current.startCapture(cameraStreamRef.current);
+      // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks on the DOM video element
+      if (videoRef.current) {
+        videoCaptureRef.current.startCapture(videoRef.current);
       } else {
-        console.warn('Camera stream not available for VideoCapture');
+        console.warn('Video element not available for VideoCapture');
       }
 
       // Render audio visualizer on canvas
@@ -1014,17 +1014,19 @@ export default function App() {
                 width: '100%', 
                 height: '100%', 
                 pointerEvents: 'none', 
-                transform: 'scaleX(-1)', // Mirror to match mirrored video feed
                 zIndex: 10 
               }}
             >
               {detectedObjects.map((obj, i) => {
                 const [x, y, w, h] = obj.bbox;
+                // Flip coordinates mathematically in JS (since video is mirrored using scaleX(-1))
+                // Center of the 640-wide SVG coordinate space is 320.
+                const mirroredX = 640 - x - w;
                 return (
                   <g key={i}>
                     {/* Bounding box rect */}
                     <rect
-                      x={x}
+                      x={mirroredX}
                       y={y}
                       width={w}
                       height={h}
@@ -1033,12 +1035,12 @@ export default function App() {
                       strokeWidth="3"
                       style={{ filter: 'drop-shadow(0 0 5px #39ff14)' }}
                     />
-                    {/* Object class name & confidence tag (Flipped back horizontally to read normally) */}
-                    <g transform={`translate(${x}, ${y - 10}) scale(-1, 1)`}>
+                    {/* Object class name & confidence tag (No nested flips needed now) */}
+                    <g transform={`translate(${mirroredX}, ${y - 10})`}>
                       <text
                         x={0}
                         y={0}
-                        textAnchor="end"
+                        textAnchor="start"
                         fill="#39ff14"
                         style={{
                           fontSize: '18px',

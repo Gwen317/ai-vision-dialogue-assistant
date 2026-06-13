@@ -40,27 +40,7 @@ export class VideoCapture {
     this.onPredictionsDetectedCallback = callback;
   }
 
-  public async startCapture(stream: MediaStream) {
-    this.mediaStream = stream;
-    const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) {
-      console.warn('No video track found in the provided stream');
-      return;
-    }
-
-    const video = document.createElement('video');
-    video.muted = true; // Mute to allow autoplay on all browsers without block
-    video.srcObject = stream;
-    video.autoplay = true;
-    video.playsInline = true;
-    
-    await new Promise((resolve) => {
-      video.onloadedmetadata = () => {
-        video.play();
-        resolve(true);
-      };
-    });
-
+  public startCapture(video: HTMLVideoElement) {
     // Lazy-load the COCO-SSD object detection model in the background
     if (!this.cocoModel && !this.isLoadingModel) {
       this.isLoadingModel = true;
