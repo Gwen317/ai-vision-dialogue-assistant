@@ -81,7 +81,33 @@ export class VideoCapture {
     this.captureIntervalId = setInterval(async () => {
       if (!this.ctx || !this.canvas) return;
 
-      this.ctx.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      // Draw video to canvas with 'cover' behavior to match the screen display aspect ratio (aspectRatio: 4/3, objectFit: cover)
+      const vWidth = video.videoWidth;
+      const vHeight = video.videoHeight;
+      if (vWidth && vHeight) {
+        const canvasW = this.canvas.width;
+        const canvasH = this.canvas.height;
+        const rIn = vWidth / vHeight;
+        const rOut = canvasW / canvasH;
+
+        let drawW, drawH, dx, dy;
+        if (rIn > rOut) {
+          // Input is wider (e.g., 16:9): scale by height and crop left/right
+          drawH = canvasH;
+          drawW = canvasH * rIn;
+          dx = (canvasW - drawW) / 2;
+          dy = 0;
+        } else {
+          // Input is taller (e.g., 1:1): scale by width and crop top/bottom
+          drawW = canvasW;
+          drawH = canvasW / rIn;
+          dx = 0;
+          dy = (canvasH - drawH) / 2;
+        }
+        this.ctx.drawImage(video, dx, dy, drawW, drawH);
+      } else {
+        this.ctx.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      }
       
       // Perform image quality check using QualityGuard
       const imageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
