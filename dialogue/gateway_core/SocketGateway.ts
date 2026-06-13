@@ -224,11 +224,13 @@ export class SocketGateway {
             console.log(`Pushed start frame to session timeline at ${new Date(speechStartedAt).toISOString()}`);
           }
           if (payload?.endFrame) {
-            session.timeline.push({
+            const endImageEvent: ImageFrameEvent = {
               type: 'image',
               timestamp: speechEndedAt,
               imageBase64: payload.endFrame
-            });
+            };
+            session.currentImageFrame = endImageEvent;
+            session.timeline.push(endImageEvent);
             console.log(`Pushed end frame to session timeline at ${new Date(speechEndedAt).toISOString()}`);
           }
 

@@ -31,6 +31,7 @@ export class VideoCapture {
     }
 
     const video = document.createElement('video');
+    video.muted = true; // Mute to allow autoplay on all browsers without block
     video.srcObject = stream;
     video.autoplay = true;
     video.playsInline = true;
