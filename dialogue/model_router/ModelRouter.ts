@@ -179,9 +179,23 @@ export function buildTimelineMessages({
 
   for (const event of contextEvents) {
     if (event.type === 'message') {
+      let content = event.parts;
+
+      if ((event as any).interrupted && event.role === 'model') {
+        content = event.parts.map((part: any, idx: number) => {
+          if (idx === 0 && typeof part.text === 'string') {
+            return {
+              ...part,
+              text: part.text + '\n\n[System: Your previous response was interrupted by the user at this point. Please continue your reasoning from exactly where you left off, seamlessly incorporating the user\'s new input below. Do not repeat what you already said — just continue from the breakpoint.]'
+            };
+          }
+          return part;
+        });
+      }
+
       messages.push({
         role: event.role === 'model' ? 'assistant' : 'user',
-        content: event.parts
+        content
       });
       continue;
     }
@@ -367,12 +381,31 @@ export class ModelRouter {
     if (!hasDashScope && !hasOpenRouter) {
       console.log('--- ModelRouter: Running in MOCK MODE ---');
       
-      // Simulate transcription feedback using local ASR text for highly responsive testing
       const finalUserSpeech = localText || '测试双工打断';
       socket.emit('user_transcription', finalUserSpeech);
-      
-      // Notify state SPEAKING
       socket.emit('state_change', 'SPEAKING');
+      
+      const currentParts: OpenRouterContentPart[] = [
+        {
+          type: 'text',
+          text: `[User speech @ ${new Date(turnTiming.speechStartedAt).toISOString()} - ${new Date(turnTiming.speechEndedAt).toISOString()}]\n${finalUserSpeech}`
+        }
+      ];
+
+      timeline.push({
+        type: 'message',
+        timestamp: turnTiming.speechStartedAt,
+        role: 'user',
+        parts: currentParts
+      });
+
+      const modelMessageEntry: TimelineEvent = {
+        type: 'message',
+        timestamp: Date.now(),
+        role: 'model',
+        parts: [{ text: '' }]
+      };
+      timeline.push(modelMessageEntry);
       
       const mockText = '这是一个用于测试双工流式打断功能的测试段落。在这个模式下，大模型不会进行真实的网络调用，而是以每两百毫秒一个词的速度向下游推送这一段很长的话。你可以随时对着你的麦克风说话，或者发出大一点的声音来测试端侧的静音检测是否能成功识别你开口说话的动作。一旦系统检测到你的声音，前端就会自动执行打断流程，将 AI 正在播放的声音静音，并通知后端强行关闭当前的流。我们可以测试后端的日志是否会打印 Stream generation aborted 和 Memory truncated。现在，请你试着说话来打断我吧！';
       
@@ -383,19 +416,19 @@ export class ModelRouter {
         for (const chunk of chunks) {
           if (signal.aborted) {
             console.log('Mock Stream generation aborted by client.');
+            modelMessageEntry.timestamp = Date.now();
             return;
           }
           
           fullResponseText += chunk;
+          modelMessageEntry.parts[0].text = fullResponseText;
           socket.emit('text_chunk', chunk);
           
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
-        // Small delay between loops
         await new Promise((resolve) => setTimeout(resolve, 1000));
         console.log('Mock Stream looping: restarting text output.');
       }
-      return;
     }
 
     // 1. Transcribe the user's audio
@@ -486,7 +519,7 @@ export class ModelRouter {
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
 
     // 3. Construct System Instruction / Prompt with memory context
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)';
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000); // Minutes
@@ -500,6 +533,24 @@ export class ModelRouter {
       timeline,
       turnTiming
     });
+
+    // 4.1 Write user message to timeline BEFORE streaming so interrupt handler can see it.
+    timeline.push({
+      type: 'message',
+      timestamp: turnTiming.speechStartedAt,
+      role: 'user',
+      parts: currentParts
+    });
+
+    // 4.2 Write model message placeholder to timeline BEFORE streaming so interrupt handler
+    //     truncates the correct (current-turn) message instead of a previous turn.
+    const modelMessageEntry: TimelineEvent = {
+      type: 'message',
+      timestamp: Date.now(),
+      role: 'model',
+      parts: [{ text: '' }]
+    };
+    timeline.push(modelMessageEntry);
 
     // 5. Generate content stream
     console.log('Generating streaming content...');
@@ -527,6 +578,7 @@ export class ModelRouter {
       // Check for abort signal from client interruption
       if (signal.aborted) {
         console.log('Stream generation aborted.');
+        modelMessageEntry.timestamp = Date.now();
         return;
       }
       
@@ -536,6 +588,7 @@ export class ModelRouter {
 
       const chunkText = chunk.choices[0]?.delta?.content ?? '';
       fullResponseText += chunkText;
+      modelMessageEntry.parts[0].text = fullResponseText;
       
       // Stream text chunk to client
       if (chunkText) {
@@ -574,21 +627,7 @@ export class ModelRouter {
 
     console.log('Stream generation completed.');
 
-    const modelAnsweredAt = Date.now();
-
-    // Save this turn to the shared timeline using event time, not processing time.
-    timeline.push({
-      type: 'message',
-      timestamp: turnTiming.speechStartedAt,
-      role: 'user',
-      parts: currentParts
-    });
-    timeline.push({
-      type: 'message',
-      timestamp: modelAnsweredAt,
-      role: 'model',
-      parts: [{ text: fullResponseText }]
-    });
+    modelMessageEntry.timestamp = Date.now();
 
     // 6. Save to Long-Term Episodic Memory in the background (non-blocking)
     EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
@@ -628,7 +667,7 @@ export class ModelRouter {
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
     const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
 
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)';
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
       systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
@@ -640,6 +679,21 @@ export class ModelRouter {
       timeline,
       turnTiming
     });
+
+    timeline.push({
+      type: 'message',
+      timestamp: turnTiming.speechStartedAt,
+      role: 'user',
+      parts: currentParts
+    });
+
+    const modelMessageEntry: TimelineEvent = {
+      type: 'message',
+      timestamp: Date.now(),
+      role: 'model',
+      parts: [{ text: '' }]
+    };
+    timeline.push(modelMessageEntry);
 
     console.log('Generating streaming content from text query...');
     socket.emit('state_change', 'SPEAKING');
@@ -665,6 +719,7 @@ export class ModelRouter {
     for await (const chunk of responseStream) {
       if (signal.aborted) {
         console.log('Text query stream generation aborted.');
+        modelMessageEntry.timestamp = Date.now();
         return;
       }
 
@@ -674,6 +729,7 @@ export class ModelRouter {
 
       const chunkText = chunk.choices[0]?.delta?.content ?? '';
       fullResponseText += chunkText;
+      modelMessageEntry.parts[0].text = fullResponseText;
       if (chunkText) {
         socket.emit('text_chunk', chunkText);
         sentenceBuffer += chunkText;
@@ -702,19 +758,7 @@ export class ModelRouter {
       this.synthesizeAndEmit(socket, remaining, currentIndex, signal, overrideTtsProvider);
     }
 
-    const modelAnsweredAt = Date.now();
-    timeline.push({
-      type: 'message',
-      timestamp: turnTiming.speechStartedAt,
-      role: 'user',
-      parts: currentParts
-    });
-    timeline.push({
-      type: 'message',
-      timestamp: modelAnsweredAt,
-      role: 'model',
-      parts: [{ text: fullResponseText }]
-    });
+    modelMessageEntry.timestamp = Date.now();
 
     EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
       .catch(err => console.error('Background memory recording failed:', err));

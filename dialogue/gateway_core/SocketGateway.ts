@@ -12,6 +12,7 @@ interface ConversationMessageEvent {
   timestamp: number;
   role: 'user' | 'model';
   parts: any[];
+  interrupted?: boolean;
 }
 
 export type TimelineEvent = ImageFrameEvent | ConversationMessageEvent;
@@ -288,19 +289,19 @@ export class SocketGateway {
             session.abortController = null;
           }
 
-          // 2. Truncate conversation timeline to match what the user actually heard
+          // 2. Mark the current-turn model message as interrupted and truncate to offset
           if (session.timeline.length > 0) {
-            const lastMsg = [...session.timeline]
+            const lastModelMsg = [...session.timeline]
               .reverse()
               .find((event): event is ConversationMessageEvent => event.type === 'message' && event.role === 'model');
 
-            if (lastMsg && typeof lastMsg.parts[0].text === 'string') {
-              const originalText = lastMsg.parts[0].text;
-              if (data.offset < originalText.length) {
-                const truncatedText = originalText.substring(0, data.offset);
-                console.log(`Truncating last message from "${originalText.substring(0, 30)}..." to "${truncatedText}"`);
-                lastMsg.parts[0].text = truncatedText + "... [user interrupted]";
+            if (lastModelMsg && typeof lastModelMsg.parts[0]?.text === 'string') {
+              const originalText = lastModelMsg.parts[0].text;
+              if (data.offset > 0 && data.offset < originalText.length) {
+                lastModelMsg.parts[0].text = originalText.substring(0, data.offset);
               }
+              lastModelMsg.interrupted = true;
+              console.log(`Marked model message as interrupted at offset ${data.offset}, text: "${lastModelMsg.parts[0].text.substring(0, 50)}..."`);
             }
           }
 
