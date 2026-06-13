@@ -13,7 +13,7 @@
 * **开发任务清单**：
   - [x] 定义并管理状态类型：`IDLE`（空闲）、`LISTENING`（录音）、`THINKING`（思考）、`SPEAKING`（播放/AI说话）。
   - [x] 提供状态变更监听器注册接口（`registerStateListener`），实时驱动前端 UI 组件的动效。
-  - [ ] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
+  - [x] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
 
 ### 2. `dialogue/acoustic_reverb/AudioAcousticProcessor.ts`
 * **功能描述**：端侧 Web Audio 声学模拟器，提供环境混响合成与 Lombard 效应自适应。
@@ -29,7 +29,7 @@
   - [x] 开启长连接 Socket.io 服务，接收客户端 `audio_chunk` 音频流和 `image_frame` 画面帧。
   - [x] 监听 `vad_end` 并启动大模型处理。
   - [x] **打断控制**：监听客户端 `interrupt` 信令，立即调用正在生成的 Gemini 实例的 `AbortController.abort()` 强杀云端 Token 生成。
-  - [ ] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
+  - [x] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
 
 ### 4. `dialogue/model_router/ModelRouter.ts`
 * **功能描述**：后端智能大模型路由，负责用户语音识别与分级模型请求分流。
@@ -70,6 +70,14 @@
 * **开发任务清单**：
   - [ ] 封装标准的指令生成静态助手类。
   - [ ] 提供 `line()`、`circle()`、`rect()`、`text()`、`clear()` 的格式化包装，确保大模型调用工具（Tool Call）或拼接回复流时输出的标签协议百分之百符合前端解析规程。
+
+### 5. 本地 COCO-SSD 目标检测与调试面板 (VideoCapture 扩展功能)
+* **功能描述**：端侧基于 TensorFlow.js COCO-SSD 的本地物体检测，与 RAG 检索对接及画面校准。
+* **开发任务清单**：
+  - [x] 基于 `@tensorflow-models/coco-ssd` 实现本地 500ms（2fps）频率的日常物体检测与追踪。
+  - [x] 精准校准算法：通过在 640x480 Canvas 上等比缩放裁剪（Cover）与 JS 显式镜像坐标映射（`mirroredX = 640 - x - w`），实现边界框与 `<video>` 的完美贴合。
+  - [x] 提供前端『🔍 识别物品与截屏调试』列表HUD，动态渲染坐标信息，并实现『📸 截屏保存』自动裁剪下载功能，便于手动定位画面漂移误差。
+  - [x] 自动联动检索：当检测到指定手持物品（如手机、杯子、剪刀等）且处于 `LISTENING` 状态时，自动触发 15 秒冷却的多模态长程情景记忆 RAG 检索请求。
 
 ---
 
