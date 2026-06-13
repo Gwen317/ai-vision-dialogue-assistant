@@ -67,6 +67,7 @@ export default function App() {
   const isRecordingSpeechRef = useRef<boolean>(false);
   const speechChunksRef = useRef<Blob[]>([]);
   const timelineEndRef = useRef<HTMLDivElement | null>(null);
+  const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<any>(null);
   const localSpeechTextRef = useRef<string>('');
   const tempUserMsgIdRef = useRef<string | null>(null);
@@ -359,8 +360,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (timelineEndRef.current) {
-      timelineEndRef.current.scrollIntoView({ behavior: 'auto' });
+    if (timelineContainerRef.current) {
+      timelineContainerRef.current.scrollTop = timelineContainerRef.current.scrollHeight;
     }
   }, [timeline]);
 
@@ -1132,7 +1133,7 @@ export default function App() {
   };
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
+    <div className="app-root">
       {!hasInteracted && (
         <div 
           onClick={async () => {
@@ -1170,31 +1171,38 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Banner */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+      {/* Compact Header */}
+      <header className="app-header">
         <div>
-          <h1 style={{ fontSize: '28px', color: '#00f2fe', textShadow: '0 0 10px rgba(0, 242, 254, 0.5)' }}>
+          <h1 style={{ fontSize: '18px', color: '#00f2fe', textShadow: '0 0 10px rgba(0, 242, 254, 0.5)' }}>
             AI VISION DIALOGUE ASSISTANT
           </h1>
-          <p style={{ color: '#94a3b8', fontSize: '14px' }}>双工音视频协同 & 长程多模态情景记忆 V1.0</p>
+          <p style={{ color: '#94a3b8', fontSize: '11px' }}>双工音视频协同 & 长程多模态情景记忆 V1.0</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button
+            onClick={() => setShowGraph(prev => !prev)}
+            className="btn-neon"
+            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px' }}
+          >
+            🧠 记忆图谱 ({graphNodes.length})
+          </button>
           <span className={`led-dot led-${appState.toLowerCase()}`}></span>
-          <span style={{ fontFamily: 'Orbitron', fontSize: '14px', textTransform: 'uppercase' }}>
+          <span style={{ fontFamily: 'Orbitron', fontSize: '13px', textTransform: 'uppercase' }}>
             {appState}
           </span>
-          <span style={{ fontSize: '12px', color: socketConnected ? '#10b981' : '#f43f5e', border: '1px solid currentColor', padding: '2px 8px', borderRadius: '4px' }}>
+          <span style={{ fontSize: '11px', color: socketConnected ? '#10b981' : '#f43f5e', border: '1px solid currentColor', padding: '2px 8px', borderRadius: '4px' }}>
             {socketConnected ? 'GATEWAY ONLINE' : 'GATEWAY OFFLINE'}
           </span>
         </div>
       </header>
 
-      {/* Main Grid */}
-      <div className="blueprint-grid">
-        {/* Left Side: Camera Preview & User Transcription */}
-        <div className="cyber-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <h2 style={{ fontSize: '18px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
-            CAMERA FEED & USER VOICE
+      {/* Main 3-Column Area */}
+      <div className="main-area">
+        {/* === LEFT: Camera Feed & Detection === */}
+        <div className="cyber-card">
+          <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
+            📷 CAMERA FEED
           </h2>
           
           {/* Camera Frame Box */}
@@ -1273,16 +1281,16 @@ export default function App() {
           </div>
 
           {/* 🔍 识别物品与截屏调试 */}
-          <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '15px', border: '1px solid rgba(0, 242, 254, 0.15)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <span style={{ fontSize: '11px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '5px' }}>
-              🔍 识别物品与截屏调试 (Manual Screenshot Debug)
+          <div className="col-scroll" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px', border: '1px solid rgba(0, 242, 254, 0.15)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <span style={{ fontSize: '10px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', flexShrink: 0 }}>
+              🔍 识别物品 (Detected Objects)
             </span>
             {detectedObjects.length === 0 ? (
-              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, fontStyle: 'italic' }}>
+              <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0, fontStyle: 'italic' }}>
                 当前未检测到任何物品，请将物品置于镜头前...
               </p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {detectedObjects.map((obj, i) => {
                   const [x, y, w, h] = obj.bbox;
                   return (
@@ -1326,20 +1334,145 @@ export default function App() {
           </div>
 
           {/* User Transcription Box */}
-          <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '15px', border: '1px solid rgba(255,255,255,0.05)', minHeight: '80px' }}>
-            <span style={{ fontSize: '11px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
+          <div style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px', border: '1px solid rgba(255,255,255,0.05)', minHeight: '50px', flexShrink: 0 }}>
+            <span style={{ fontSize: '10px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', marginBottom: '3px' }}>
               USER INPUT
             </span>
-            <p style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: '1.4' }}>
+            <p style={{ fontSize: '13px', color: '#e2e8f0', lineHeight: '1.4' }}>
               {transcription || '请直接对着麦克风说话...'}
             </p>
           </div>
         </div>
 
-        {/* Right Side: Interactive Drawing Canvas & Controls */}
-        <div className="cyber-card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <h2 style={{ fontSize: '18px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
-            INTERACTIVE SCHEMATIC CANVAS
+        {/* === CENTER: Dialogue Timeline & Controls === */}
+        <div className="cyber-card">
+          {/* Timeline Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0 }}>
+            <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
+              💬 DIALOGUE TIMELINE
+            </span>
+            <button 
+              onClick={clearLogs} 
+              className="btn-neon btn-neon-rose"
+              style={{ padding: '3px 10px', fontSize: '10px', borderRadius: '4px' }}
+            >
+              CLEAR LOGS
+            </button>
+          </div>
+
+          {/* Timeline - fills space, scrolls internally */}
+          <div className="timeline-container" ref={timelineContainerRef}>
+            <div className="timeline-line"></div>
+            {timeline.length === 0 ? (
+              <div style={{ display: 'flex', height: '100%', justifyContent: 'center', alignItems: 'center', color: '#64748b', fontSize: '14px', fontFamily: 'Outfit' }}>
+                {appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问，直接对着麦克风说话即可开始录音...'}
+              </div>
+            ) : (
+              timeline.map((msg) => (
+                <div key={msg.id} className="timeline-item">
+                  <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
+                  <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
+                    <div className="timeline-meta">
+                      <span className={`timeline-role-${msg.role}`}>
+                        {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
+                      </span>
+                      <span className="timeline-time">{msg.timestamp}</span>
+                    </div>
+                    <div className="timeline-text">
+                      {msg.text}
+                      {msg.isStreaming && <span className="typing-cursor"></span>}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+            <div ref={timelineEndRef} />
+          </div>
+
+          {/* Controls / Status Bar */}
+          <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: '6px', paddingTop: '6px' }}>
+            <div 
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '8px 24px',
+                borderRadius: '50px',
+                background: isUserSpeaking ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+                border: isUserSpeaking ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.1)',
+                boxShadow: isUserSpeaking ? '0 0 25px rgba(0, 242, 254, 0.4)' : 'none',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                pointerEvents: 'none',
+                userSelect: 'none'
+              }}
+            >
+              <div 
+                style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '50%',
+                  background: isUserSpeaking ? '#00f2fe' : '#475569',
+                  boxShadow: isUserSpeaking ? '0 0 10px #00f2fe' : 'none',
+                }}
+              />
+              <svg 
+                style={{ width: '18px', height: '18px', color: isUserSpeaking ? '#00f2fe' : '#475569', transition: 'color 0.3s ease' }} 
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+              <span style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '13px', fontWeight: 'bold', color: isUserSpeaking ? '#00f2fe' : '#475569', letterSpacing: '1px', transition: 'color 0.3s ease' }}>
+                {isUserSpeaking ? 'USER SPEAKING' : 'USER SILENT'}
+              </span>
+            </div>
+            {/* VAD HUD Dashboard */}
+            <div 
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'center',
+                gap: '12px',
+                padding: '6px 16px',
+                borderRadius: '8px',
+                background: 'rgba(10, 11, 16, 0.6)',
+                border: '1px solid rgba(0, 242, 254, 0.15)',
+                fontFamily: 'Orbitron, monospace',
+                fontSize: '10px',
+                color: '#8a99ad',
+                boxShadow: '0 0 10px rgba(0, 242, 254, 0.05)',
+                userSelect: 'none'
+              }}
+            >
+              <div>
+                SPEECH: <span id="vad-rms" style={{ color: '#ffffff', fontWeight: 'bold' }}>0.0%</span>
+              </div>
+              <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+              <div>
+                阈值: <span style={{ color: '#ff007f', fontWeight: 'bold' }}>50% / {(interruptThreshold * 100).toFixed(0)}%</span>
+              </div>
+              <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+              <div>
+                LLM: <span style={{ color: '#00f2fe', fontWeight: 'bold' }}>{llmProvider === 'dashscope' ? '通义' : 'OpenRouter'}</span>
+              </div>
+              <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+              <div>
+                TTS: <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>{ttsProvider === 'cosyvoice' ? 'CosyVoice' : 'Browser'}</span>
+              </div>
+              <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+              <div>
+                VAD: <span style={{ color: '#39ff14', fontWeight: 'bold' }}>Silero</span>
+              </div>
+            </div>
+            <p style={{ fontSize: '10px', color: '#64748b', margin: 0, fontFamily: 'sans-serif' }}>
+              {socketConnected ? '双工声音感应器已激活，直接开口说话可打断 AI' : '等待网关连接...'}
+            </p>
+          </div>
+        </div>
+
+        {/* === RIGHT: Canvas & Config === */}
+        <div className="cyber-card">
+          <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
+            🎨 SCHEMATIC CANVAS
           </h2>
 
           {/* Drawing Canvas Box */}
@@ -1348,7 +1481,7 @@ export default function App() {
           </div>
 
           {/* Configuration Panel */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '15px', padding: '10px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
+          <div className="col-scroll" style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '10px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px' }}>
             <div>
               <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
                 Acoustic Reverb (混响效果)
@@ -1437,7 +1570,7 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div style={{ gridColumn: 'span 4', marginTop: '5px' }}>
+            <div>
               <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
                 AI播音时打断概率阈值 (Interruption Threshold during Playback)
               </label>
@@ -1460,44 +1593,50 @@ export default function App() {
         </div>
       </div>
 
-      {/* ─── 实体记忆图谱面板 ─── */}
-      <div style={{ padding: '0 24px', marginTop: '20px' }}>
-        <div className="cyber-card" style={{ border: '1px solid rgba(0, 242, 254, 0.15)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: showGraph ? '1px solid rgba(255,255,255,0.08)' : 'none', paddingBottom: showGraph ? '10px' : 0, marginBottom: showGraph ? '10px' : 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '12px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
-                🧠 ENTITY MEMORY GRAPH
-              </span>
-              <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>
-                {graphNodes.length} nodes · {graphLinks.length} links
-              </span>
+      {/* === Memory Graph Modal Overlay === */}
+      {showGraph && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}
+          onClick={() => setShowGraph(false)}
+        >
+          <div
+            className="cyber-card"
+            style={{ width: '100%', maxWidth: '1100px', maxHeight: '90vh', overflow: 'auto', border: '1px solid rgba(0, 242, 254, 0.3)' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px', marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '12px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
+                  🧠 ENTITY MEMORY GRAPH
+                </span>
+                <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>
+                  {graphNodes.length} nodes · {graphLinks.length} links
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => {
+                    detectedObjects.forEach(obj => {
+                      const frame = videoCaptureRef.current.getLatestFrame?.();
+                      emitAnalyzeDetectedObject(obj.class, frame || undefined);
+                    });
+                  }}
+                  className="btn-neon"
+                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', opacity: detectedObjects.length > 0 ? 1 : 0.4 }}
+                  disabled={detectedObjects.length === 0}
+                >
+                  + 导入当前检测物体
+                </button>
+                <button
+                  onClick={() => setShowGraph(false)}
+                  className="btn-neon btn-neon-rose"
+                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
+                >
+                  ✕ 关闭
+                </button>
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                onClick={() => {
-                  // 手动从当前检测列表批量导入并进行 AI 前置分析
-                  detectedObjects.forEach(obj => {
-                    const frame = videoCaptureRef.current.getLatestFrame?.();
-                    emitAnalyzeDetectedObject(obj.class, frame || undefined);
-                  });
-                }}
-                className="btn-neon"
-                style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', opacity: detectedObjects.length > 0 ? 1 : 0.4 }}
-                disabled={detectedObjects.length === 0}
-              >
-                + 导入当前检测物体
-              </button>
-              <button
-                onClick={() => setShowGraph(prev => !prev)}
-                className="btn-neon"
-                style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
-              >
-                {showGraph ? '▲ 收起图谱' : '▼ 展开图谱'}
-              </button>
-            </div>
-          </div>
 
-          {showGraph && (
             <div style={{ display: 'flex', gap: '16px', minHeight: '440px' }}>
               {/* 左侧：D3 力学图谱 */}
               <div style={{ flex: 2 }}>
@@ -1637,156 +1776,9 @@ export default function App() {
                 </div>
               </div>
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Bottom Segment: AI Response & Control Panel */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '0 24px 24px' }}>
-        {/* Dialogue Timeline Panel */}
-        <div className="cyber-card" style={{ border: '1px solid var(--border-neon-purple)', boxShadow: '0 0 15px rgba(168, 85, 247, 0.15)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }}>
-            <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
-              DIALOGUE TIMELINE & INTERACTIVE LOGS
-            </span>
-            <button 
-              onClick={clearLogs} 
-              className="btn-neon btn-neon-rose"
-              style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
-            >
-              CLEAR LOGS
-            </button>
-          </div>
-
-          <div className="timeline-container">
-            <div className="timeline-line"></div>
-            {timeline.length === 0 ? (
-              <div style={{ display: 'flex', height: '100%', justifyContent: 'center', alignItems: 'center', color: '#64748b', fontSize: '14px', fontFamily: 'Outfit' }}>
-                {appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问，直接对着麦克风说话即可开始录音...'}
-              </div>
-            ) : (
-              timeline.map((msg) => (
-                <div key={msg.id} className="timeline-item">
-                  <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
-                  <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
-                    <div className="timeline-meta">
-                      <span className={`timeline-role-${msg.role}`}>
-                        {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
-                      </span>
-                      <span className="timeline-time">{msg.timestamp}</span>
-                    </div>
-                    <div className="timeline-text">
-                      {msg.text}
-                      {msg.isStreaming && <span className="typing-cursor"></span>}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-            <div ref={timelineEndRef} />
           </div>
         </div>
-
-        {/* Central Controls (Speech Status Indicator, Non-clickable) */}
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: '10px' }}>
-          <div 
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '15px',
-              padding: '12px 30px',
-              borderRadius: '50px',
-              background: isUserSpeaking ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.02)',
-              border: isUserSpeaking ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.1)',
-              boxShadow: isUserSpeaking ? '0 0 25px rgba(0, 242, 254, 0.4)' : 'none',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              pointerEvents: 'none',
-              userSelect: 'none'
-            }}
-          >
-            {/* Pulsating recording circle */}
-            <div 
-              style={{
-                width: '12px',
-                height: '12px',
-                borderRadius: '50%',
-                background: isUserSpeaking ? '#00f2fe' : '#475569',
-                boxShadow: isUserSpeaking ? '0 0 10px #00f2fe' : 'none',
-              }}
-            />
-            
-            {/* Microphone Icon */}
-            <svg 
-              style={{ 
-                width: '20px', 
-                height: '20px', 
-                color: isUserSpeaking ? '#00f2fe' : '#475569',
-                transition: 'color 0.3s ease'
-              }} 
-              fill="none" 
-              stroke="currentColor" 
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-            </svg>
-            
-            {/* Status text */}
-            <span 
-              style={{ 
-                fontFamily: 'Orbitron, sans-serif', 
-                fontSize: '14px', 
-                fontWeight: 'bold',
-                color: isUserSpeaking ? '#00f2fe' : '#475569',
-                letterSpacing: '1px',
-                transition: 'color 0.3s ease'
-              }}
-            >
-              {isUserSpeaking ? 'USER SPEAKING' : 'USER SILENT'}
-            </span>
-          </div>
-          {/* VAD HUD Dashboard (Real-time 60fps stats) */}
-          <div 
-            style={{
-              display: 'flex',
-              gap: '20px',
-              marginTop: '10px',
-              padding: '8px 20px',
-              borderRadius: '8px',
-              background: 'rgba(10, 11, 16, 0.6)',
-              border: '1px solid rgba(0, 242, 254, 0.15)',
-              fontFamily: 'Orbitron, monospace',
-              fontSize: '11px',
-              color: '#8a99ad',
-              boxShadow: '0 0 10px rgba(0, 242, 254, 0.05)',
-              userSelect: 'none'
-            }}
-          >
-            <div>
-              SPEECH PROB (人声概率): <span id="vad-rms" style={{ color: '#ffffff', fontWeight: 'bold' }}>0.0%</span>
-            </div>
-            <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
-            <div>
-              ACTIVATION (阈值 静默/打断): <span style={{ color: '#ff007f', fontWeight: 'bold' }}>50% / {(interruptThreshold * 100).toFixed(0)}%</span>
-            </div>
-            <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
-            <div>
-              LLM ENGINE (大语言模型): <span style={{ color: '#00f2fe', fontWeight: 'bold' }}>{llmProvider === 'dashscope' ? 'Aliyun Qwen (通义)' : 'OpenRouter'}</span>
-            </div>
-             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
-             <div>
-               TTS ENGINE (语音播音): <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>{ttsProvider === 'cosyvoice' ? 'Aliyun CosyVoice' : 'Browser Native'}</span>
-             </div>
-             <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
-             <div>
-               MODEL (检测模型): <span style={{ color: '#39ff14', fontWeight: 'bold' }}>Silero VAD (ONNX)</span>
-             </div>
-          </div>
-
-          <p style={{ fontSize: '11px', color: '#64748b', marginTop: '10px', marginBottom: 0, fontFamily: 'sans-serif' }}>
-            {socketConnected ? '双工声音感应器已激活，直接开口说话可打断 AI' : '等待网关连接...'}
-          </p>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
