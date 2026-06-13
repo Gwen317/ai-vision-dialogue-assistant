@@ -236,6 +236,15 @@ export default function App() {
         audioQueueRef.current = [];
         nextPlayIndexRef.current = 0;
         isAudioPlayingRef.current = false;
+      } else {
+        // Stop local ASR if we are thinking or speaking to avoid recording AI speech echo
+        if (recognitionRef.current && isSpeechRecognitionActiveRef.current) {
+          try {
+            recognitionRef.current.abort();
+          } catch (e) {
+            console.error('Error aborting ASR on state change:', e);
+          }
+        }
       }
     });
 
@@ -311,6 +320,11 @@ export default function App() {
     };
 
     recognition.onresult = (event: any) => {
+      // Discard results if we are not in LISTENING state to prevent echo recording
+      if (fsmRef.current.getCurrentState() !== 'LISTENING') {
+        return;
+      }
+
       let totalText = '';
       for (let i = 0; i < event.results.length; ++i) {
         totalText += event.results[i][0].transcript;
@@ -353,8 +367,15 @@ export default function App() {
     recognition.onend = () => {
       console.log('Local ASR: Stopped');
       isSpeechRecognitionActiveRef.current = false;
-      // Restart ASR if recording session is active (continuous listening)
-      if (fsmRef.current.getCurrentState() !== 'IDLE' && mediaStreamRef.current) {
+      
+      const isAIPaying = isSpeakingRef.current || isAudioPlayingRef.current;
+      
+      // Restart ASR if recording session is active, we are in LISTENING state, and AI is not playing
+      if (
+        fsmRef.current.getCurrentState() === 'LISTENING' && 
+        mediaStreamRef.current && 
+        !isAIPaying
+      ) {
         try {
           recognition.start();
         } catch (e) {
