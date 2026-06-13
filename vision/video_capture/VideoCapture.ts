@@ -21,6 +21,7 @@ export class VideoCapture {
   private cocoModel: cocoSsd.ObjectDetection | null = null;
   private isLoadingModel = false;
   private onObjectDetectedCallback?: (className: string, base64Frame: string) => void = undefined;
+  private onPredictionsDetectedCallback?: (predictions: cocoSsd.DetectedObject[]) => void = undefined;
   private cooldowns: Map<string, number> = new Map();
   private readonly cooldownMs = 15000; // 15 seconds cooldown per object class
 
@@ -33,6 +34,10 @@ export class VideoCapture {
 
   public registerOnObjectDetected(callback: (className: string, base64Frame: string) => void) {
     this.onObjectDetectedCallback = callback;
+  }
+
+  public registerOnPredictionsDetected(callback: (predictions: cocoSsd.DetectedObject[]) => void) {
+    this.onPredictionsDetectedCallback = callback;
   }
 
   public async startCapture(stream: MediaStream) {
@@ -101,7 +106,12 @@ export class VideoCapture {
       // If QualityGuard checks pass and model is loaded, run local object detection inference
       if (brightness.passed && blur.passed && this.cocoModel) {
         try {
-          const predictions = await this.cocoModel.detect(video);
+          // Detect on the canvas to ensure coordinates align perfectly with 640x480 coordinate space
+          const predictions = await this.cocoModel.detect(this.canvas);
+          
+          if (this.onPredictionsDetectedCallback) {
+            this.onPredictionsDetectedCallback(predictions);
+          }
           
           // Target typical everyday objects in the user's hand/feed
           const targetClasses = ['cell phone', 'cup', 'bottle', 'scissors', 'book', 'keyboard', 'mouse', 'laptop', 'handbag', 'banana', 'apple', 'orange'];
@@ -120,6 +130,11 @@ export class VideoCapture {
           }
         } catch (err) {
           console.error('[VideoCapture] Object detection inference error:', err);
+        }
+      } else {
+        // Clear bounding boxes if quality guard checks fail or model is not loaded
+        if (this.onPredictionsDetectedCallback) {
+          this.onPredictionsDetectedCallback([]);
         }
       }
     }, 500);

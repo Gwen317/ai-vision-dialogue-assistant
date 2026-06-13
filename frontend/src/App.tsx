@@ -35,6 +35,7 @@ export default function App() {
   const [hasInteracted, setHasInteracted] = useState<boolean>(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
   const [timeline, setTimeline] = useState<TimelineMessage[]>([]);
+  const [detectedObjects, setDetectedObjects] = useState<any[]>([]);
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -49,6 +50,7 @@ export default function App() {
 
   // Audio Recording & Playback Refs
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const visualizerIntervalRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -270,8 +272,9 @@ export default function App() {
     });
 
     // 3. Set up camera feed
-    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
       .then((stream) => {
+        cameraStreamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
@@ -288,6 +291,9 @@ export default function App() {
       if (visualizerIntervalRef.current) clearInterval(visualizerIntervalRef.current);
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       videoCaptureRef.current.stopCapture();
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach(track => track.stop());
+      }
     };
   }, []);
 
@@ -303,6 +309,7 @@ export default function App() {
     setAiResponse('');
     localSpeechTextRef.current = '';
     tempUserMsgIdRef.current = null;
+    setDetectedObjects([]);
 
     isCosyVoiceActiveRef.current = false;
     if (audioSourceRef.current) {
@@ -653,6 +660,11 @@ export default function App() {
       vadRef.current = vad;
       vad.start();
 
+      // Register callback to update bounding boxes overlay
+      videoCaptureRef.current.registerOnPredictionsDetected((predictions) => {
+        setDetectedObjects(predictions);
+      });
+
       // Register local object detection callback to auto-trigger memory RAG retrieval
       videoCaptureRef.current.registerOnObjectDetected((className, base64Frame) => {
         // Only auto-trigger if the system is currently LISTENING (ready for interaction)
@@ -679,7 +691,11 @@ export default function App() {
       });
 
       // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks
-      videoCaptureRef.current.startCapture(stream);
+      if (cameraStreamRef.current) {
+        videoCaptureRef.current.startCapture(cameraStreamRef.current);
+      } else {
+        console.warn('Camera stream not available for VideoCapture');
+      }
 
       // Render audio visualizer on canvas
       renderVisualizer(analyser);
@@ -897,6 +913,7 @@ export default function App() {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
     }
     videoCaptureRef.current.stopCapture();
+    setDetectedObjects([]);
     fsmRef.current.transitionTo('IDLE');
     setTranscription('');
     setAiResponse('');
@@ -986,7 +1003,59 @@ export default function App() {
           {/* Camera Frame Box */}
           <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', background: '#000', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-neon)' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} />
-            <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+            
+            {/* Object Detection Overlay Bounding Boxes */}
+            <svg 
+              viewBox="0 0 640 480" 
+              style={{ 
+                position: 'absolute', 
+                top: 0, 
+                left: 0, 
+                width: '100%', 
+                height: '100%', 
+                pointerEvents: 'none', 
+                transform: 'scaleX(-1)', // Mirror to match mirrored video feed
+                zIndex: 10 
+              }}
+            >
+              {detectedObjects.map((obj, i) => {
+                const [x, y, w, h] = obj.bbox;
+                return (
+                  <g key={i}>
+                    {/* Bounding box rect */}
+                    <rect
+                      x={x}
+                      y={y}
+                      width={w}
+                      height={h}
+                      fill="none"
+                      stroke="#39ff14"
+                      strokeWidth="3"
+                      style={{ filter: 'drop-shadow(0 0 5px #39ff14)' }}
+                    />
+                    {/* Object class name & confidence tag (Flipped back horizontally to read normally) */}
+                    <g transform={`translate(${x}, ${y - 10}) scale(-1, 1)`}>
+                      <text
+                        x={0}
+                        y={0}
+                        textAnchor="end"
+                        fill="#39ff14"
+                        style={{
+                          fontSize: '18px',
+                          fontFamily: 'Orbitron, sans-serif',
+                          fontWeight: 'bold',
+                          textShadow: '0 0 8px #39ff14, 1px 1px 2px #000'
+                        }}
+                      >
+                        {obj.class} ({(obj.score * 100).toFixed(0)}%)
+                      </text>
+                    </g>
+                  </g>
+                );
+              })}
+            </svg>
+
+            <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', gap: '10px', alignItems: 'center', zIndex: 20 }}>
               <span className={`led-dot led-${appState === 'LISTENING' ? 'listening' : 'idle'}`}></span>
               <span style={{ fontSize: '12px', color: '#fff', textShadow: '1px 1px 2px #000' }}>
                 {appState === 'LISTENING' ? 'MIC RECORDING' : 'MIC MUTE'}
