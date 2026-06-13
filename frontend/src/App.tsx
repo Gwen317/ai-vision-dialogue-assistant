@@ -169,17 +169,38 @@ export default function App() {
     // Handle user speech transcription
     socket.on('user_transcription', (text: string) => {
       setTranscription(text);
-      if (text.trim()) {
-        setTimeline(prev => [
-          ...prev,
-          {
-            id: 'user-' + Date.now(),
-            role: 'user',
-            text: text.trim(),
-            timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      const cleanText = text.trim();
+      if (cleanText) {
+        setTimeline(prev => {
+          const next = [...prev];
+          const tempIndex = next.findIndex(m => m.id === tempUserMsgIdRef.current);
+          if (tempIndex !== -1) {
+            // Replace the temporary message with the final backend-transcribed text
+            next[tempIndex] = {
+              ...next[tempIndex],
+              id: 'user-' + Date.now(),
+              text: cleanText
+            };
+          } else {
+            // Append if no temp message was found
+            next.push({
+              id: 'user-' + Date.now(),
+              role: 'user',
+              text: cleanText,
+              timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+            });
           }
-        ]);
+          return next;
+        });
+      } else {
+        // If final text is empty, remove the temp message from the timeline to avoid empty bubbles
+        if (tempUserMsgIdRef.current) {
+          setTimeline(prev => prev.filter(m => m.id !== tempUserMsgIdRef.current));
+        }
       }
+      // Reset variables for the next turn
+      tempUserMsgIdRef.current = null;
+      localSpeechTextRef.current = '';
     });
 
     // Handle streaming text chunks from LLM
@@ -551,6 +572,10 @@ export default function App() {
           isRecordingSpeechRef.current = true;
           speechChunksRef.current = [];
 
+          // Initialize/Reset local text and temporary message ID for this new turn
+          localSpeechTextRef.current = '';
+          tempUserMsgIdRef.current = null;
+
           const mimeType = selectSpeechMimeType();
           const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
           mediaRecorderRef.current = recorder;
@@ -596,17 +621,15 @@ export default function App() {
               return next;
             });
 
-            // Reset and restart local ASR for the new user speech turn
-            localSpeechTextRef.current = '';
-            tempUserMsgIdRef.current = null;
-            if (recognitionRef.current) {
-              try {
-                recognitionRef.current.abort();
-                recognitionRef.current.start();
-              } catch (e) {
-                console.log('Error restarting ASR on interrupt:', e);
-              }
-            }
+             // Reset and restart local ASR for the new user speech turn
+             if (recognitionRef.current) {
+               try {
+                 recognitionRef.current.abort();
+                 recognitionRef.current.start();
+               } catch (e) {
+                 console.log('Error restarting ASR on interrupt:', e);
+               }
+             }
           }
         },
         onSpeechEnd: () => {
@@ -690,6 +713,13 @@ export default function App() {
           mediaRecorderRef.current = null;
           fsmRef.current.transitionTo('LISTENING');
           
+          // Remove temporary message from timeline
+          if (tempUserMsgIdRef.current) {
+            setTimeline(prev => prev.filter(m => m.id !== tempUserMsgIdRef.current));
+          }
+          tempUserMsgIdRef.current = null;
+          localSpeechTextRef.current = '';
+
           // Re-init SpeechRecognition
           if (recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
             try {
@@ -714,6 +744,13 @@ export default function App() {
           mediaRecorderRef.current = null;
           fsmRef.current.transitionTo('LISTENING');
           
+          // Remove temporary message from timeline
+          if (tempUserMsgIdRef.current) {
+            setTimeline(prev => prev.filter(m => m.id !== tempUserMsgIdRef.current));
+          }
+          tempUserMsgIdRef.current = null;
+          localSpeechTextRef.current = '';
+
           // Re-init SpeechRecognition
           if (recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
             try {
@@ -758,8 +795,6 @@ export default function App() {
         console.error('Error aborting ASR on speech end:', e);
       }
     }
-    localSpeechTextRef.current = '';
-    tempUserMsgIdRef.current = null;
   };
 
   const renderVisualizer = (analyser: AnalyserNode) => {
