@@ -354,6 +354,49 @@ export class SocketGateway {
         }
       });
 
+      // Handle detected object AI analysis
+      socket.on('analyze_detected_object', async (payload: {
+        className: string;
+        imageFrame?: string;
+        existingNodes: string[];
+        llmProvider?: string;
+      }) => {
+        const session = this.sessions.get(socket.id);
+        if (!session) return;
+
+        console.log(`[SocketGateway] Received 'analyze_detected_object' for "${payload.className}"`);
+
+        try {
+          const result = await ModelRouter.analyzeDetectedObject(
+            session.timeline,
+            payload.className,
+            payload.imageFrame || null,
+            payload.existingNodes || [],
+            payload.llmProvider
+          );
+          
+          socket.emit('object_analysis_result', {
+            className: payload.className,
+            imageFrame: payload.imageFrame,
+            analysis: result
+          });
+        } catch (err) {
+          console.error(`Error analyzing detected object:`, err);
+          // Fallback to direct style response to prevent UI block
+          socket.emit('object_analysis_result', {
+            className: payload.className,
+            imageFrame: payload.imageFrame,
+            analysis: {
+              shouldAdd: payload.className.toLowerCase() !== 'person',
+              refinedLabel: payload.className,
+              type: 'concept',
+              details: `视觉检测到的物体: ${payload.className}。`,
+              relations: []
+            }
+          });
+        }
+      });
+
       // Ping-pong for keep-alive
       socket.on('ping', () => {
         socket.emit('pong');

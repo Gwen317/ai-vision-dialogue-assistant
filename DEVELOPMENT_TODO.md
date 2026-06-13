@@ -88,24 +88,24 @@
 ### 1. `memory_graph/entity_graph/D3GraphRenderer.tsx`
 * **功能描述**：端侧 D3.js 物理环境实体拓扑图谱。
 * **开发任务清单**：
-  - [ ] 集成 D3 力学仿真（`forceSimulation`），支持节点排斥力、连线弹力及居中定位。
-  - [ ] 绘制带有发光（Neon）呼吸动效的圆圈节点，并根据类型（设备、电容、工具、普通概念）呈现不同色彩。
-  - [ ] 提供拖拽力交互绑定，并暴露节点点击回调接口（`onNodeClick`），当用户点击特定物理元器件节点时，弹出悬浮卡片显示当时的截屏和 AI 分析记录。
+  - [x] 集成 D3 力学仿真（`forceSimulation`），支持节点排斥力、连线弹力及居中定位。
+  - [x] 绘制带有发光（Neon）呼吸动效的圆圈节点，并根据类型（设备、电容、工具、普通概念）呈现不同色彩。
+  - [x] 提供拖拽力交互绑定，并暴露节点点击回调接口（`onNodeClick`），当用户点击特定物理元器件节点时，弹出悬浮卡片显示当时的截屏和 AI 分析记录。
 
 ### 2. `memory_graph/backend/vector_rag/QdrantClient.ts`
 * **功能描述**：后端向量数据库 Qdrant 客户端连接与存取组件。
 * **开发任务清单**：
-  - [ ] 封装 Qdrant SDK 或 HTTP API 连接器。
-  - [ ] 提供 Collection 的创建与检索优化（Payload 索引）。
-  - [ ] 提供高维向量数据及包含截图描述、会话转译的 Payload 数据的 upsert 接口与 search 接口。
+  - [x] 封装 Qdrant SDK 或 HTTP API 连接器。
+  - [x] 提供 Collection 的创建与检索优化（Payload 索引）。
+  - [x] 提供高维向量数据及包含截图描述、会话转译的 Payload 数据的 upsert 接口与 search 接口。
 
 ### 3. `memory_graph/backend/episodic_memory/EpisodicMemoryService.ts`
 * **功能描述**：长程情景记忆核心存取与双路召回算法服务。
 * **开发任务清单**：
-  - [ ] 会话结束时，将文本调用 `text-embedding-004` 提取语义特征向量。
-  - [ ] 将图像（如有）调用 `multimodal-embedding-001` 提取视觉特征向量，并异步调用 `gemini-2.5-flash` 自动生成一句话实体摘要。
-  - [ ] 保存并维护 `MemoryCard` 结构。
-  - [ ] **双路加权检索**：实现相似度融合公式：
+  - [x] 会话结束时，将文本调用 `text-embedding-v3` (DashScope) 提取语义特征向量。
+  - [x] 将图像（如有）调用多模态 VL 模型自动生成一句话实体摘要，并以描述文本生成视觉代理向量。
+  - [x] 保存并维护 `MemoryCard` 结构。
+  - [x] **双路加权检索**：实现相似度融合公式：
     $$\text{Score} = w_{\text{text}} \cdot \text{Sim}_{\text{text}} + w_{\text{vis}} \cdot \text{Sim}_{\text{vis}}$$
     其中 $w_{\text{text}} = 0.4$，$w_{\text{vis}} = 0.6$。在融合评分高于 `0.70` 时，将关联度最高的那张记忆卡片的会话纪要及画面描述拼入大模型 System Prompt 进行多模态 RAG 召回。
 

@@ -506,7 +506,10 @@ export class ModelRouter {
     
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000); // Minutes
-      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
+      const entityInfo = recalledMemory.entityTags?.length
+        ? `\nIdentified entities: [${recalledMemory.entityTags.join(', ')}]`
+        : '';
+      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}${entityInfo}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
     }
 
     // 4. Assemble current payload parts in event-time order.
@@ -669,7 +672,10 @@ export class ModelRouter {
     let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
-      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
+      const entityInfo = recalledMemory.entityTags?.length
+        ? `\nIdentified entities: [${recalledMemory.entityTags.join(', ')}]`
+        : '';
+      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}${entityInfo}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
     }
 
     const { messages, currentParts } = buildTimelineMessages({
@@ -805,4 +811,172 @@ export class ModelRouter {
       console.error(`Failed to synthesize text: "${text}", error:`, err);
     }
   }
+
+  /**
+   * 结合视觉、时间与上下文，智能分析并过滤目标检测实体
+   */
+  public static async analyzeDetectedObject(
+    timeline: TimelineEvent[],
+    className: string,
+    imageBase64: string | null,
+    existingNodes: string[],
+    overrideLlmProvider?: string
+  ): Promise<any> {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
+    const useOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_');
+
+    const recentMessages = timeline
+      .filter((event): event is ConversationMessageEvent => event.type === 'message')
+      .slice(-6);
+    
+    const conversationHistoryText = recentMessages
+      .map(msg => {
+        const text = msg.parts.map((p: any) => p.text || '').join('');
+        return `${msg.role === 'user' ? '用户' : 'AI助手'}: ${text}`;
+      })
+      .join('\n') || '(无历史对话)';
+
+    const prompt = `你是一个辅助 AI 视觉对话助手的实体分析大脑。
+我们刚刚在摄像头画面中通过目标检测识别到了一个物体。
+目标检测标签 (Class): "${className}"
+当前本地时间 (Local Time): ${new Date().toLocaleString('zh-CN')}
+
+当前对话历史上下文 (Recent Conversation History):
+${conversationHistoryText}
+
+当前图谱中已存在的节点 (Existing Nodes in Graph):
+${existingNodes.length > 0 ? existingNodes.map(n => `- ${n}`).join('\n') : '(无)'}
+
+请结合时间、上下文信息以及摄像头图片（若提供），对该物体进行一次智能语义分析，以决定它是否应该进入我们的实体记忆图谱中。
+
+注意：
+1. shouldAdd: 如果此物体仅仅是背景杂音（例如检测到了 person，但其实这只是用户本人，图谱不需要记录用户本人作为物品；或者检测错误/无关噪点），则设为 false；如果它是一个重要的物理实体（如电容、仪器、手机、电阻、剪刀等工具或设备），尤其是用户在对话中提到过或正在使用的，设为 true。
+2. refinedLabel: 细化名称。如果上下文明确了该物体的具体名称（例如用户提到“这是我的万用表”，而标签只是“electronic device”），请将其重命名为更具体、有温度的中文名（如“万用表”）；若无更具体命名，请翻译为通俗的中文名（如 "cell phone" -> "智能手机"）。
+3. type: 必须是以下五个值之一：'device'（设备/仪器）、'tool'（工具）、'wire'（连线）、'concept'（普通概念）、'capacitor'（电容/元器件）。
+4. details: 结合对话上下文与时间，写一句分析描述（例如：“用户在 19:30 调试电路时使用的剪刀，用于修剪导线。”）。
+5. relations: 分析该物体与“已存在的节点”之间的语义关联（例如，万用表和电阻之间有“测量”关系，面包板和导线之间有“插接”关系）。
+
+请严格只返回一个 JSON 对象，格式如下：
+{
+  "shouldAdd": true,
+  "refinedLabel": "智能手机",
+  "type": "device",
+  "details": "用户在对话中用以展示或调试的手机设备。",
+  "relations": [
+    { "target": "existing_node_id", "relation": "连接到" }
+  ]
 }
+不要包含任何 markdown 块或额外的解释文字。`;
+
+    let resultText = '';
+
+    if (useDashScope) {
+      const modelName = process.env.DASHSCOPE_CHAT_MODEL || 'qwen-vl-plus';
+      console.log(`[ModelRouter] Object analysis routing to Aliyun DashScope model: ${modelName}`);
+      const client = new OpenAI({
+        apiKey: dashscopeKey,
+        baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+      });
+
+      const contentParts: any[] = [{ type: 'text', text: prompt }];
+      if (imageBase64) {
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:image/jpeg;base64,${imageBase64}`
+          }
+        });
+      }
+
+      const response = await client.chat.completions.create({
+        model: modelName,
+        messages: [{ role: 'user', content: contentParts }],
+        temperature: 0.2
+      });
+
+      resultText = response.choices[0]?.message?.content || '';
+    } else if (useOpenRouter) {
+      const modelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
+      console.log(`[ModelRouter] Object analysis routing to OpenRouter model: ${modelName}`);
+      const client = new OpenAI({
+        apiKey: openrouterKey,
+        baseURL: 'https://openrouter.ai/api/v1'
+      });
+
+      const contentParts: any[] = [{ type: 'text', text: prompt }];
+      if (imageBase64) {
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:image/jpeg;base64,${imageBase64}`
+          }
+        });
+      }
+
+      const response = await client.chat.completions.create({
+        model: modelName,
+        messages: [{ role: 'user', content: contentParts }],
+        temperature: 0.2
+      });
+
+      resultText = response.choices[0]?.message?.content || '';
+    } else {
+      console.log('[ModelRouter] Object analysis running in MOCK mode.');
+      const lowerClass = className.toLowerCase();
+      const shouldAdd = lowerClass !== 'person';
+      
+      const mockRefinedLabels: Record<string, { refinedLabel: string; type: string; details: string }> = {
+        'cell phone': { refinedLabel: '智能手机', type: 'device', details: `于时间 ${new Date().toLocaleTimeString()} 视觉检测到的手机设备，结合上下文用于互动。` },
+        'scissors': { refinedLabel: '安全剪刀', type: 'tool', details: `于时间 ${new Date().toLocaleTimeString()} 检测到的裁剪工具，在组装场景中使用。` },
+        'cup': { refinedLabel: '水杯', type: 'concept', details: `于时间 ${new Date().toLocaleTimeString()} 放置在桌面上的饮水容器。` },
+        'person': { refinedLabel: '用户本人', type: 'concept', details: '互动的参与主体。' }
+      };
+      
+      const mockInfo = mockRefinedLabels[lowerClass] || {
+        refinedLabel: className,
+        type: 'concept',
+        details: `于时间 ${new Date().toLocaleTimeString()} 自动检测到的物品: ${className}。`
+      };
+
+      const mockRelations: Array<{ target: string; relation: string }> = [];
+      if (existingNodes.length > 0) {
+        mockRelations.push({
+          target: existingNodes[0],
+          relation: '同场景出现'
+        });
+      }
+
+      return {
+        shouldAdd,
+        refinedLabel: mockInfo.refinedLabel,
+        type: mockInfo.type,
+        details: mockInfo.details,
+        relations: mockRelations
+      };
+    }
+
+    console.log(`[ModelRouter] Object analysis raw response:\n${resultText}`);
+
+    try {
+      const match = resultText.match(/\{[\s\S]*\}/);
+      if (match) {
+        return JSON.parse(match[0]);
+      }
+      return JSON.parse(resultText);
+    } catch (err) {
+      console.error(`[ModelRouter] Failed to parse object analysis JSON:`, err);
+      return {
+        shouldAdd: className.toLowerCase() !== 'person',
+        refinedLabel: className,
+        type: 'concept',
+        details: `自动检测到的"${className}"。`,
+        relations: []
+      };
+    }
+  }
+}
+

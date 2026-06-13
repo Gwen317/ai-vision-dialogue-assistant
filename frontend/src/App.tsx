@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { FsmController } from '../../dialogue/vad_capture/FsmController';
 import type { AppState } from '../../dialogue/vad_capture/FsmController';
@@ -6,6 +6,7 @@ import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcou
 import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 import { MicVAD } from '@ricky0123/vad-web';
 import { VideoCapture } from '../../vision/video_capture/VideoCapture';
+import { D3GraphRenderer, type GraphNode, type GraphLink } from '../../memory_graph/entity_graph/D3GraphRenderer';
 
 function selectSpeechMimeType(): string {
   const candidates = [
@@ -36,6 +37,13 @@ export default function App() {
   const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
   const [timeline, setTimeline] = useState<TimelineMessage[]>([]);
   const [detectedObjects, setDetectedObjects] = useState<any[]>([]);
+
+  // ─── 记忆图谱状态 ───
+  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
+  const [graphLinks, setGraphLinks] = useState<GraphLink[]>([]);
+  const [showGraph, setShowGraph] = useState<boolean>(false);
+  const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
+  const graphNodeSetRef = useRef<Set<string>>(new Set());
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -256,6 +264,39 @@ export default function App() {
       });
     });
 
+    // Handle AI object analysis result
+    socket.on('object_analysis_result', (data: {
+      className: string;
+      imageFrame?: string;
+      analysis: {
+        shouldAdd: boolean;
+        refinedLabel: string;
+        type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor';
+        details: string;
+        relations: Array<{ target: string; relation: string }>;
+      };
+    }) => {
+      const { className, imageFrame, analysis } = data;
+      console.log(`[App] Received object analysis result for ${className}:`, analysis);
+
+      if (!analysis.shouldAdd) {
+        console.log(`[App] AI decided NOT to add ${className} to memory graph.`);
+        return;
+      }
+
+      addAnalyzedObjectToGraph(className, analysis, imageFrame);
+
+      setTimeline(prev => [
+        ...prev,
+        {
+          id: 'user-detect-log-' + Date.now(),
+          role: 'user',
+          text: `[🔍 智能分析与建链] 发现并识别到物体 "${analysis.refinedLabel}" (${analysis.type})。AI 分析: "${analysis.details}"`,
+          timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+        }
+      ]);
+    });
+
     // 2. FSM state change listener
     fsmRef.current.registerStateListener((state) => {
       setAppState(state);
@@ -348,7 +389,126 @@ export default function App() {
       } catch (e) {}
     }
     socketRef.current?.emit('clear_history');
+
+    // 清空图谱
+    setGraphNodes([]);
+    setGraphLinks([]);
+    graphNodeSetRef.current.clear();
   };
+
+  /**
+   * 发送摄像头检测到的物体至后端，请求 AI 智能分析与关系评估
+   */
+  const emitAnalyzeDetectedObject = useCallback((className: string, imageBase64?: string) => {
+    const existingNodeIds = Array.from(graphNodeSetRef.current);
+    socketRef.current?.emit('analyze_detected_object', {
+      className,
+      imageFrame: imageBase64,
+      existingNodes: existingNodeIds,
+      llmProvider: llmProviderRef.current
+    });
+    console.log(`[App] Sent 'analyze_detected_object' request for: ${className}`);
+  }, []);
+
+  /**
+   * 将后端 AI 确认且分析过的物体及智能关系链加入实体图谱
+   */
+  const addAnalyzedObjectToGraph = useCallback((
+    className: string,
+    analysis: {
+      refinedLabel: string;
+      type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor';
+      details: string;
+      relations: Array<{ target: string; relation: string }>;
+    },
+    imageBase64?: string
+  ) => {
+    const nodeId = className.toLowerCase().replace(/\s+/g, '_');
+
+    if (graphNodeSetRef.current.has(nodeId)) {
+      // 若已存在，更新为 AI 细化分析的数据
+      setGraphNodes(prev => prev.map(node => {
+        if (node.id === nodeId) {
+          return {
+            ...node,
+            label: analysis.refinedLabel,
+            type: analysis.type,
+            details: analysis.details,
+            image: imageBase64 || node.image
+          };
+        }
+        return node;
+      }));
+
+      // 更新关系链
+      if (analysis.relations && analysis.relations.length > 0) {
+        setGraphLinks(prevLinks => {
+          const updatedLinks = [...prevLinks];
+          for (const rel of analysis.relations) {
+            const linkExists = updatedLinks.some(l => {
+              const s = typeof l.source === 'string' ? l.source : l.source.id;
+              const t = typeof l.target === 'string' ? l.target : l.target.id;
+              return (s === nodeId && t === rel.target) || (s === rel.target && t === nodeId);
+            });
+            if (!linkExists) {
+              updatedLinks.push({
+                source: nodeId,
+                target: rel.target,
+                relation: rel.relation
+              });
+            }
+          }
+          return updatedLinks;
+        });
+      }
+      return;
+    }
+
+    graphNodeSetRef.current.add(nodeId);
+
+    const newNode: GraphNode = {
+      id: nodeId,
+      label: analysis.refinedLabel,
+      type: analysis.type,
+      image: imageBase64 || undefined,
+      details: analysis.details,
+      firstSeen: new Date().toISOString()
+    };
+
+    setGraphNodes(prev => {
+      const updated = [...prev, newNode];
+      const newLinks: GraphLink[] = [];
+
+      if (analysis.relations && analysis.relations.length > 0) {
+        for (const rel of analysis.relations) {
+          newLinks.push({
+            source: nodeId,
+            target: rel.target,
+            relation: rel.relation
+          });
+        }
+      } else {
+        // AI 未返回特定关系时，降级与全部已有节点建立“同场景”关联
+        for (const existing of prev) {
+          newLinks.push({
+            source: existing.id,
+            target: nodeId,
+            relation: '同场景'
+          });
+        }
+      }
+
+      if (newLinks.length > 0) {
+        setGraphLinks(prevLinks => [...prevLinks, ...newLinks]);
+      }
+
+      return updated;
+    });
+  }, []);
+
+  const handleGraphNodeClick = useCallback((node: GraphNode) => {
+    setSelectedGraphNode(node);
+  }, []);
 
   const initSpeechRecognition = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -690,6 +850,9 @@ export default function App() {
         // Only auto-trigger if the system is currently LISTENING (ready for interaction)
         if (fsmRef.current.getCurrentState() === 'LISTENING') {
           console.log(`[App] Auto-triggering RAG query for detected object: ${className}`);
+
+          // 发起 AI 智能分析与关系评估后，再动态加入实体图谱
+          emitAnalyzeDetectedObject(className, base64Frame);
           
           setTimeline(prev => [
             ...prev,
@@ -1294,6 +1457,187 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ─── 实体记忆图谱面板 ─── */}
+      <div style={{ padding: '0 24px', marginTop: '20px' }}>
+        <div className="cyber-card" style={{ border: '1px solid rgba(0, 242, 254, 0.15)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: showGraph ? '1px solid rgba(255,255,255,0.08)' : 'none', paddingBottom: showGraph ? '10px' : 0, marginBottom: showGraph ? '10px' : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '12px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
+                🧠 ENTITY MEMORY GRAPH
+              </span>
+              <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>
+                {graphNodes.length} nodes · {graphLinks.length} links
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  // 手动从当前检测列表批量导入并进行 AI 前置分析
+                  detectedObjects.forEach(obj => {
+                    const frame = videoCaptureRef.current.getLatestFrame?.();
+                    emitAnalyzeDetectedObject(obj.class, frame || undefined);
+                  });
+                }}
+                className="btn-neon"
+                style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', opacity: detectedObjects.length > 0 ? 1 : 0.4 }}
+                disabled={detectedObjects.length === 0}
+              >
+                + 导入当前检测物体
+              </button>
+              <button
+                onClick={() => setShowGraph(prev => !prev)}
+                className="btn-neon"
+                style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
+              >
+                {showGraph ? '▲ 收起图谱' : '▼ 展开图谱'}
+              </button>
+            </div>
+          </div>
+
+          {showGraph && (
+            <div style={{ display: 'flex', gap: '16px', minHeight: '440px' }}>
+              {/* 左侧：D3 力学图谱 */}
+              <div style={{ flex: 2 }}>
+                {graphNodes.length === 0 ? (
+                  <div style={{
+                    display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
+                    height: '100%', minHeight: '400px', borderRadius: '12px',
+                    border: '1px dashed rgba(0, 242, 254, 0.2)', background: '#0b0f19',
+                    color: '#4a5568', fontFamily: "'Inter', sans-serif", textAlign: 'center', padding: '40px'
+                  }}>
+                    <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}>🧠</div>
+                    <div style={{ fontSize: '14px', marginBottom: '8px' }}>实体图谱为空</div>
+                    <div style={{ fontSize: '12px', color: '#3a4553', lineHeight: 1.6 }}>
+                      将物品放置在摄像头前方，系统会自动检测并识别。<br/>
+                      点击上方「导入当前检测物体」按钮将物品添加到图谱中。<br/>
+                      或者，在对话过程中系统会自动提取实体关系。
+                    </div>
+                  </div>
+                ) : (
+                  <D3GraphRenderer
+                    nodes={graphNodes}
+                    links={graphLinks}
+                    onNodeClick={handleGraphNodeClick}
+                  />
+                )}
+              </div>
+
+              {/* 右侧：节点详情面板 + 节点列表 */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '320px' }}>
+                {/* 选中节点详情 */}
+                {selectedGraphNode ? (
+                  <div style={{
+                    background: 'rgba(10, 14, 28, 0.9)', borderRadius: '10px',
+                    border: '1px solid rgba(0, 242, 254, 0.2)', padding: '16px',
+                    backdropFilter: 'blur(8px)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <span style={{ color: '#00f2fe', fontFamily: 'Orbitron', fontSize: '11px', textTransform: 'uppercase' }}>NODE DETAILS</span>
+                      <button onClick={() => setSelectedGraphNode(null)} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+                    </div>
+                    {selectedGraphNode.image && (
+                      <div style={{ marginBottom: '12px', borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(0,242,254,0.15)' }}>
+                        <img
+                          src={selectedGraphNode.image.startsWith('data:') ? selectedGraphNode.image : `data:image/jpeg;base64,${selectedGraphNode.image}`}
+                          alt={selectedGraphNode.label}
+                          style={{ width: '100%', height: 'auto', display: 'block' }}
+                        />
+                      </div>
+                    )}
+                    <div style={{ color: '#e2e8f0', fontWeight: 700, fontSize: '16px', marginBottom: '6px' }}>{selectedGraphNode.label}</div>
+                    <div style={{ display: 'inline-block', padding: '2px 10px', borderRadius: '10px', fontSize: '11px', background: 'rgba(0,242,254,0.1)', color: '#00f2fe', border: '1px solid rgba(0,242,254,0.3)', marginBottom: '10px' }}>
+                      {selectedGraphNode.type}
+                    </div>
+                    {selectedGraphNode.details && (
+                      <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.5, marginBottom: '8px' }}>
+                        📋 {selectedGraphNode.details}
+                      </div>
+                    )}
+                    {selectedGraphNode.firstSeen && (
+                      <div style={{ fontSize: '11px', color: '#4a5568' }}>
+                        🕐 首次发现: {new Date(selectedGraphNode.firstSeen).toLocaleString('zh-CN')}
+                      </div>
+                    )}
+                    {/* 显示关联的边 */}
+                    <div style={{ marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '8px' }}>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '6px' }}>🔗 关联节点</div>
+                      {graphLinks
+                        .filter(l => {
+                          const s = typeof l.source === 'string' ? l.source : l.source.id;
+                          const t = typeof l.target === 'string' ? l.target : l.target.id;
+                          return s === selectedGraphNode.id || t === selectedGraphNode.id;
+                        })
+                        .map((l, i) => {
+                          const s = typeof l.source === 'string' ? l.source : l.source.id;
+                          const t = typeof l.target === 'string' ? l.target : l.target.id;
+                          const otherId = s === selectedGraphNode.id ? t : s;
+                          return (
+                            <div key={i} style={{ fontSize: '12px', color: '#8a99ad', padding: '2px 0' }}>
+                              → <span style={{ color: '#00f2fe' }}>{otherId}</span>
+                              <span style={{ color: '#4a5568', marginLeft: '6px' }}>({l.relation})</span>
+                            </div>
+                          );
+                        })
+                      }
+                      {graphLinks.filter(l => {
+                        const s = typeof l.source === 'string' ? l.source : l.source.id;
+                        const t = typeof l.target === 'string' ? l.target : l.target.id;
+                        return s === selectedGraphNode.id || t === selectedGraphNode.id;
+                      }).length === 0 && (
+                        <div style={{ fontSize: '11px', color: '#3a4553', fontStyle: 'italic' }}>暂无关联</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ background: 'rgba(10, 14, 28, 0.6)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)', padding: '20px', textAlign: 'center', color: '#4a5568', fontSize: '12px' }}>
+                    点击图谱中的节点查看详情
+                  </div>
+                )}
+
+                {/* 节点列表 */}
+                <div style={{ flex: 1, background: 'rgba(10,14,28,0.5)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)', padding: '12px', overflowY: 'auto', maxHeight: '260px' }}>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '8px', fontFamily: 'Orbitron', textTransform: 'uppercase' }}>All Nodes</div>
+                  {graphNodes.map(node => (
+                    <div
+                      key={node.id}
+                      onClick={() => setSelectedGraphNode(node)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        padding: '8px 10px', borderRadius: '6px', cursor: 'pointer',
+                        background: selectedGraphNode?.id === node.id ? 'rgba(0,242,254,0.08)' : 'transparent',
+                        border: selectedGraphNode?.id === node.id ? '1px solid rgba(0,242,254,0.2)' : '1px solid transparent',
+                        marginBottom: '4px',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {/* 缩略图 */}
+                      {node.image ? (
+                        <img
+                          src={node.image.startsWith('data:') ? node.image : `data:image/jpeg;base64,${node.image}`}
+                          alt={node.label}
+                          style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover', border: '1px solid rgba(0,242,254,0.15)', flexShrink: 0 }}
+                        />
+                      ) : (
+                        <div style={{ width: 36, height: 36, borderRadius: 6, background: 'rgba(0,242,254,0.05)', border: '1px solid rgba(0,242,254,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>
+                          {node.type === 'device' ? '⚡' : node.type === 'tool' ? '🔧' : '◆'}
+                        </div>
+                      )}
+                      <div style={{ overflow: 'hidden' }}>
+                        <div style={{ color: '#e2e8f0', fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.label}</div>
+                        <div style={{ color: '#4a5568', fontSize: '10px' }}>{node.type}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {graphNodes.length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#3a4553', fontSize: '11px', padding: '20px 0' }}>空</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
