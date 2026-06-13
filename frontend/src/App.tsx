@@ -1057,6 +1057,16 @@ export default function App() {
               })}
             </svg>
 
+            {/* Debug Info Overlay */}
+            <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.8)', color: '#00f2fe', padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace', zIndex: 30, pointerEvents: 'none', border: '1px solid rgba(0, 242, 254, 0.3)' }}>
+              <div>Video Intrinsic: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'unknown'}</div>
+              <div>Canvas Size: 640x480</div>
+              <div>Predictions Count: {detectedObjects.length}</div>
+              {detectedObjects.length > 0 && (
+                <div>Box[0]: {JSON.stringify(detectedObjects[0].bbox.map((n: number) => Math.round(n)))}</div>
+              )}
+            </div>
+
             <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', gap: '10px', alignItems: 'center', zIndex: 20 }}>
               <span className={`led-dot led-${appState === 'LISTENING' ? 'listening' : 'idle'}`}></span>
               <span style={{ fontSize: '12px', color: '#fff', textShadow: '1px 1px 2px #000' }}>
