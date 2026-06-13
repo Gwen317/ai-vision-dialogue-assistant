@@ -13,7 +13,7 @@
 * **开发任务清单**：
   - [x] 定义并管理状态类型：`IDLE`（空闲）、`LISTENING`（录音）、`THINKING`（思考）、`SPEAKING`（播放/AI说话）。
   - [x] 提供状态变更监听器注册接口（`registerStateListener`），实时驱动前端 UI 组件的动效。
-  - [x] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
+  - [ ] 实现打断（Interrupt）事件触发时的状态强转清理逻辑。
 
 ### 2. `dialogue/acoustic_reverb/AudioAcousticProcessor.ts`
 * **功能描述**：端侧 Web Audio 声学模拟器，提供环境混响合成与 Lombard 效应自适应。
@@ -29,7 +29,7 @@
   - [x] 开启长连接 Socket.io 服务，接收客户端 `audio_chunk` 音频流和 `image_frame` 画面帧。
   - [x] 监听 `vad_end` 并启动大模型处理。
   - [x] **打断控制**：监听客户端 `interrupt` 信令，立即调用正在生成的 Gemini 实例的 `AbortController.abort()` 强杀云端 Token 生成。
-  - [x] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
+  - [ ] **记忆截断**：依据客户端上报的已播字词偏移量（Offset），在后台数据库中对上一轮 AI 的文本进行截断，防止“端云记忆分叉”。
 
 ### 4. `dialogue/model_router/ModelRouter.ts`
 * **功能描述**：后端智能大模型路由，负责用户语音识别与分级模型请求分流。

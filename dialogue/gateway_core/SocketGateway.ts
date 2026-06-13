@@ -29,6 +29,7 @@ interface AudioChunkPayload {
 interface VADEndPayload {
   speechStartedAt?: number;
   speechEndedAt?: number;
+  localText?: string;
 }
 
 interface VADStartPayload {
@@ -182,7 +183,8 @@ export class SocketGateway {
         const session = this.sessions.get(socket.id);
         if (!session) return;
 
-        console.log(`VAD end detected for client ${socket.id}, processing request...`);
+        const localText = payload?.localText || '';
+        console.log(`VAD end detected for client ${socket.id}, local ASR text: "${localText}", processing request...`);
         socket.emit('state_change', 'THINKING');
 
         // Cancel any ongoing generation for this session
@@ -215,7 +217,8 @@ export class SocketGateway {
               speechStartedAt,
               speechEndedAt
             },
-            session.abortController.signal
+            session.abortController.signal,
+            localText
           );
         } catch (err: any) {
           if (err.name === 'AbortError') {
@@ -259,6 +262,20 @@ export class SocketGateway {
           }
 
           socket.emit('state_change', 'LISTENING');
+        }
+      });
+
+      // Handle clear history
+      socket.on('clear_history', () => {
+        const session = this.sessions.get(socket.id);
+        if (session) {
+          console.log(`Clearing history and state for client ${socket.id}`);
+          session.timeline = [];
+          session.audioChunks = [];
+          if (session.abortController) {
+            session.abortController.abort();
+            session.abortController = null;
+          }
         }
       });
 

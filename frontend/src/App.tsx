@@ -16,6 +16,14 @@ function selectSpeechMimeType(): string {
   return candidates.find(candidate => MediaRecorder.isTypeSupported(candidate)) || '';
 }
 
+interface TimelineMessage {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: string;
+  isStreaming?: boolean;
+}
+
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [transcription, setTranscription] = useState<string>('');
@@ -25,6 +33,7 @@ export default function App() {
   const [noiseAdaptEnabled, setNoiseAdaptEnabled] = useState<boolean>(true);
   const [hasInteracted, setHasInteracted] = useState<boolean>(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
+  const [timeline, setTimeline] = useState<TimelineMessage[]>([]);
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -45,6 +54,11 @@ export default function App() {
   const currentSpeechStartedAtRef = useRef<number | null>(null);
   const isRecordingSpeechRef = useRef<boolean>(false);
   const speechChunksRef = useRef<Blob[]>([]);
+  const timelineEndRef = useRef<HTMLDivElement | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const localSpeechTextRef = useRef<string>('');
+  const tempUserMsgIdRef = useRef<string | null>(null);
+  const isSpeechRecognitionActiveRef = useRef<boolean>(false);
 
   // Text & Streaming Playback Refs
   const speechQueueRef = useRef<string[]>([]);
@@ -71,11 +85,41 @@ export default function App() {
     // Handle state change from backend
     socket.on('state_change', (state: AppState) => {
       fsmRef.current.transitionTo(state);
+      if (state === 'IDLE' || state === 'LISTENING') {
+        setTimeline(prev => {
+          const next = [...prev];
+          const lastMsgIndex = next.map(m => m.role).lastIndexOf('model');
+          if (lastMsgIndex !== -1 && next[lastMsgIndex].isStreaming) {
+            next[lastMsgIndex].isStreaming = false;
+          }
+          return next;
+        });
+
+        // Restart local ASR when returning to LISTENING (AI finished speaking)
+        if (state === 'LISTENING' && recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
+          try {
+            recognitionRef.current.start();
+          } catch (e) {
+            console.log('Ignore start delay error on state change:', e);
+          }
+        }
+      }
     });
 
     // Handle user speech transcription
     socket.on('user_transcription', (text: string) => {
       setTranscription(text);
+      if (text.trim()) {
+        setTimeline(prev => [
+          ...prev,
+          {
+            id: 'user-' + Date.now(),
+            role: 'user',
+            text: text.trim(),
+            timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+          }
+        ]);
+      }
     });
 
     // Handle streaming text chunks from LLM
@@ -85,6 +129,23 @@ export default function App() {
         globalTextLengthRef.current = newText.length;
         handleIncomingToken(chunk);
         return newText;
+      });
+
+      setTimeline(prev => {
+        const next = [...prev];
+        const lastMsg = next[next.length - 1];
+        if (lastMsg && lastMsg.role === 'model' && lastMsg.isStreaming) {
+          lastMsg.text += chunk;
+        } else {
+          next.push({
+            id: 'model-' + Date.now(),
+            role: 'model',
+            text: chunk,
+            timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+            isStreaming: true
+          });
+        }
+        return next;
       });
     });
 
@@ -122,6 +183,96 @@ export default function App() {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (timelineEndRef.current) {
+      timelineEndRef.current.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [timeline]);
+
+  const clearLogs = () => {
+    setTimeline([]);
+    setTranscription('');
+    setAiResponse('');
+    localSpeechTextRef.current = '';
+    tempUserMsgIdRef.current = null;
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+    }
+    socketRef.current?.emit('clear_history');
+  };
+
+  const initSpeechRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn('SpeechRecognition is not supported in this browser.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'zh-CN';
+
+    recognition.onstart = () => {
+      console.log('Local ASR: Started');
+      isSpeechRecognitionActiveRef.current = true;
+    };
+
+    recognition.onresult = (event: any) => {
+      let totalText = '';
+      for (let i = 0; i < event.results.length; ++i) {
+        totalText += event.results[i][0].transcript;
+      }
+
+      const currentText = totalText.trim();
+      if (!currentText) return;
+
+      // Update current User message in timeline in real-time
+      setTimeline(prev => {
+        const next = [...prev];
+        const lastMsgIndex = next.map(m => m.id).lastIndexOf(tempUserMsgIdRef.current || '');
+        if (lastMsgIndex !== -1) {
+          next[lastMsgIndex].text = currentText;
+        } else {
+          const newId = 'user-temp-' + Date.now();
+          tempUserMsgIdRef.current = newId;
+          next.push({
+            id: newId,
+            role: 'user',
+            text: currentText,
+            timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+          });
+        }
+        return next;
+      });
+
+      localSpeechTextRef.current = currentText;
+      setTranscription(currentText);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Local ASR error:', event.error);
+      if (event.error === 'no-speech') return;
+    };
+
+    recognition.onend = () => {
+      console.log('Local ASR: Stopped');
+      isSpeechRecognitionActiveRef.current = false;
+      // Restart ASR if recording session is active (continuous listening)
+      if (fsmRef.current.getCurrentState() !== 'IDLE' && mediaStreamRef.current) {
+        try {
+          recognition.start();
+        } catch (e) {
+          console.log('Ignore restart delay error:', e);
+        }
+      }
+    };
+
+    recognitionRef.current = recognition;
+  };
 
   // Handle incoming tokens from LLM and assemble sentences for TTS
   const handleIncomingToken = (token: string) => {
@@ -210,6 +361,14 @@ export default function App() {
       setTranscription('正在听您说话...');
       setAiResponse('');
 
+      // Initialize and start local SpeechRecognition
+      initSpeechRecognition();
+      try {
+        recognitionRef.current?.start();
+      } catch (e) {
+        console.error('Failed to start local SpeechRecognition:', e);
+      }
+
       // Setup audio analyser only for the visualizer
       const audioCtx = acousticProcessorRef.current.getAudioContext()!;
       const source = audioCtx.createMediaStreamSource(stream);
@@ -247,6 +406,32 @@ export default function App() {
             console.log('Interruption detected!');
             window.speechSynthesis.cancel();
             socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
+
+            // Frontend timeline truncation
+            setTimeline(prev => {
+              const next = [...prev];
+              const lastMsgIndex = next.map(m => m.role).lastIndexOf('model');
+              if (lastMsgIndex !== -1) {
+                const lastMsg = next[lastMsgIndex];
+                if (charOffsetRef.current < lastMsg.text.length) {
+                  lastMsg.text = lastMsg.text.substring(0, charOffsetRef.current) + "... [用户已打断]";
+                  lastMsg.isStreaming = false;
+                }
+              }
+              return next;
+            });
+
+            // Reset and restart local ASR for the new user speech turn
+            localSpeechTextRef.current = '';
+            tempUserMsgIdRef.current = null;
+            if (recognitionRef.current) {
+              try {
+                recognitionRef.current.abort();
+                recognitionRef.current.start();
+              } catch (e) {
+                console.log('Error restarting ASR on interrupt:', e);
+              }
+            }
           }
         },
         onSpeechEnd: () => {
@@ -328,7 +513,8 @@ export default function App() {
 
       socketRef.current?.emit('vad_end', {
         speechStartedAt,
-        speechEndedAt: endedAt
+        speechEndedAt: endedAt,
+        localText: localSpeechTextRef.current
       });
       isRecordingSpeechRef.current = false;
       mediaRecorderRef.current = null;
@@ -338,6 +524,17 @@ export default function App() {
 
     currentSpeechStartedAtRef.current = null;
     fsmRef.current.transitionTo('THINKING');
+
+    // Abort local ASR to stop transcription during AI output
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {
+        console.error('Error aborting ASR on speech end:', e);
+      }
+    }
+    localSpeechTextRef.current = '';
+    tempUserMsgIdRef.current = null;
   };
 
   const renderVisualizer = (analyser: AnalyserNode) => {
@@ -381,6 +578,13 @@ export default function App() {
 
   const stopSession = () => {
     window.speechSynthesis.cancel();
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+    }
+    localSpeechTextRef.current = '';
+    tempUserMsgIdRef.current = null;
     if (vadRef.current) {
       try {
         vadRef.current.destroy();
@@ -550,14 +754,48 @@ export default function App() {
 
       {/* Bottom Segment: AI Response & Control Panel */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '0 24px 24px' }}>
-        {/* AI response box */}
+        {/* Dialogue Timeline Panel */}
         <div className="cyber-card" style={{ border: '1px solid var(--border-neon-purple)', boxShadow: '0 0 15px rgba(168, 85, 247, 0.15)' }}>
-          <span style={{ fontSize: '11px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
-            ASSISTANT RESPONSE
-          </span>
-          <p style={{ fontSize: '16px', color: '#e2e8f0', lineHeight: '1.6', minHeight: '40px' }}>
-            {aiResponse || (appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问...')}
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '8px' }}>
+            <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
+              DIALOGUE TIMELINE & INTERACTIVE LOGS
+            </span>
+            <button 
+              onClick={clearLogs} 
+              className="btn-neon btn-neon-rose"
+              style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
+            >
+              CLEAR LOGS
+            </button>
+          </div>
+
+          <div className="timeline-container">
+            <div className="timeline-line"></div>
+            {timeline.length === 0 ? (
+              <div style={{ display: 'flex', height: '100%', justifyContent: 'center', alignItems: 'center', color: '#64748b', fontSize: '14px', fontFamily: 'Outfit' }}>
+                {appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问，直接对着麦克风说话即可开始录音...'}
+              </div>
+            ) : (
+              timeline.map((msg) => (
+                <div key={msg.id} className="timeline-item">
+                  <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
+                  <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
+                    <div className="timeline-meta">
+                      <span className={`timeline-role-${msg.role}`}>
+                        {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
+                      </span>
+                      <span className="timeline-time">{msg.timestamp}</span>
+                    </div>
+                    <div className="timeline-text">
+                      {msg.text}
+                      {msg.isStreaming && <span className="typing-cursor"></span>}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+            <div ref={timelineEndRef} />
+          </div>
         </div>
 
         {/* Central Controls (Speech Status Indicator, Non-clickable) */}

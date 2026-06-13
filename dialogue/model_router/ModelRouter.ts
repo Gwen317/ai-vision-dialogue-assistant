@@ -236,14 +236,16 @@ export class ModelRouter {
     imageFrame: ImageFrameEvent | null,
     timeline: TimelineEvent[],
     turnTiming: TurnTiming,
-    signal: AbortSignal
+    signal: AbortSignal,
+    localText?: string
   ): Promise<void> {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey || apiKey === 'mock' || apiKey.startsWith('your_')) {
       console.log('--- ModelRouter: Running in MOCK MODE ---');
       
-      // Simulate transcription feedback
-      socket.emit('user_transcription', '测试双工打断');
+      // Simulate transcription feedback using local ASR text for highly responsive testing
+      const finalUserSpeech = localText || '测试双工打断';
+      socket.emit('user_transcription', finalUserSpeech);
       
       // Notify state SPEAKING
       socket.emit('state_change', 'SPEAKING');
@@ -283,7 +285,6 @@ export class ModelRouter {
         : await transcribeWithMolifangzhou(audioBuffer, audioMimeType);
     } catch (err: any) {
       const message = err instanceof Error ? err.message : 'Molifangzhou STT failed.';
-
       console.error(message, err);
       socket.emit('user_transcription', '');
       socket.emit('error', message);
