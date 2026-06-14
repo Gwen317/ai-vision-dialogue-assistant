@@ -209,6 +209,7 @@ export default function App() {
   const [noiseAdaptEnabled, setNoiseAdaptEnabled] = useState<boolean>(true);
   const [hasInteracted, setHasInteracted] = useState<boolean>(false);
   const [isUserSpeaking, setIsUserSpeaking] = useState<boolean>(false);
+  const [isAiAudioPlaying, setIsAiAudioPlaying] = useState<boolean>(false);
   const [timeline, setTimeline] = useState<TimelineMessage[]>([]);
   const [detectedObjects, setDetectedObjects] = useState<any[]>([]);
 
@@ -287,12 +288,14 @@ export default function App() {
     nextPlayIndexRef.current = 0;
     isAudioPlayingRef.current = false;
     isCosyVoiceActiveRef.current = false;
+    setIsAiAudioPlaying(false);
   };
 
   const stopAiPlayback = useCallback(() => {
     window.speechSynthesis.cancel();
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
+    setIsAiAudioPlaying(false);
 
     if (audioSourceRef.current) {
       try {
@@ -323,6 +326,7 @@ export default function App() {
     window.speechSynthesis.cancel();
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
+    setIsAiAudioPlaying(false);
     
     if (audioSourceRef.current) {
       try {
@@ -559,6 +563,7 @@ export default function App() {
         window.speechSynthesis.cancel();
         speechQueueRef.current = [];
         isSpeakingRef.current = false;
+        setIsAiAudioPlaying(false);
         charOffsetRef.current = 0;
         sentenceAccumulatorRef.current = '';
         globalTextLengthRef.current = 0;
@@ -574,6 +579,7 @@ export default function App() {
         audioQueueRef.current = [];
         nextPlayIndexRef.current = 0;
         isAudioPlayingRef.current = false;
+        setIsAiAudioPlaying(false);
       } else {
         // Stop local ASR if we are thinking or speaking to avoid recording AI speech echo
         if (recognitionRef.current && isSpeechRecognitionActiveRef.current) {
@@ -639,6 +645,8 @@ export default function App() {
     audioQueueRef.current = [];
     nextPlayIndexRef.current = 0;
     isAudioPlayingRef.current = false;
+    isSpeakingRef.current = false;
+    setIsAiAudioPlaying(false);
 
     if (recognitionRef.current) {
       try {
@@ -1000,10 +1008,12 @@ export default function App() {
   const playNextSentence = () => {
     if (speechQueueRef.current.length === 0) {
       isSpeakingRef.current = false;
+      setIsAiAudioPlaying(false);
       return;
     }
 
     isSpeakingRef.current = true;
+    setIsAiAudioPlaying(true);
     const sentence = speechQueueRef.current.shift()!;
     const utterance = new SpeechSynthesisUtterance(sentence);
     
@@ -1037,10 +1047,12 @@ export default function App() {
     const targetIdx = audioQueueRef.current.findIndex(item => item.index === nextPlayIndexRef.current);
     if (targetIdx === -1) {
       isAudioPlayingRef.current = false;
+      setIsAiAudioPlaying(false);
       return;
     }
 
     isAudioPlayingRef.current = true;
+    setIsAiAudioPlaying(true);
     const { index, audio } = audioQueueRef.current.splice(targetIdx, 1)[0];
     nextPlayIndexRef.current = index + 1;
 
@@ -1147,6 +1159,7 @@ export default function App() {
           if (isSpeakingRef.current || isAudioPlayingRef.current) {
             console.log('Interruption detected!');
             window.speechSynthesis.cancel();
+            isSpeakingRef.current = false;
 
             if (audioSourceRef.current) {
               try {
@@ -1157,6 +1170,7 @@ export default function App() {
             audioQueueRef.current = [];
             nextPlayIndexRef.current = 0;
             isAudioPlayingRef.current = false;
+            setIsAiAudioPlaying(false);
 
             socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
 
@@ -1434,6 +1448,8 @@ export default function App() {
     audioQueueRef.current = [];
     nextPlayIndexRef.current = 0;
     isAudioPlayingRef.current = false;
+    isSpeakingRef.current = false;
+    setIsAiAudioPlaying(false);
 
     if (recognitionRef.current) {
       try {
@@ -2026,6 +2042,7 @@ export default function App() {
             key={live2dKey}
             aiText={aiResponse}
             appState={appState}
+            isAiAudioPlaying={isAiAudioPlaying}
             modelUrl={live2dModelUrl || undefined}
             onModelChange={(url) => {
               setLive2dModelUrl(url);

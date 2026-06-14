@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Application, Ticker } from 'pixi.js';
-import { Live2DModel } from 'pixi-live2d-display';
+import { Live2DModel, config as live2dConfig } from 'pixi-live2d-display';
 
 export interface Live2DModelOption {
   label: string;
@@ -9,13 +9,14 @@ export interface Live2DModelOption {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const LIVE2D_MODELS: Live2DModelOption[] = [
+  { label: 'Hijiki (黑猫)', url: '/live2d/hijiki/hijiki.model.json' },
   { label: 'Shizuku (雫)', url: '/live2d/shizuku/shizuku.model.json' },
-  { label: 'Hijiki (黑柴)', url: '/live2d/hijiki/hijiki.model.json' },
   { label: 'Koharu (小春)', url: '/live2d/koharu/koharu.model.json' },
 ];
 
 const STORAGE_KEY = 'live2d_model_url';
 const CUSTOM_PREFIX = '__custom__';
+export const DEFAULT_LIVE2D_MODEL_URL = LIVE2D_MODELS[0].url;
 
 interface CoreModelLike {
   setParameterValueById?: (id: string, value: number) => void;
@@ -25,6 +26,7 @@ interface CoreModelLike {
 interface Live2DViewProps {
   aiText: string;
   appState: 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING';
+  isAiAudioPlaying?: boolean;
   modelUrl?: string;
   onModelChange?: (url: string) => void;
 }
@@ -33,7 +35,13 @@ function cleanBubbleText(text: string): string {
   return text.replace(/^\[.*?\]\s*/s, '').trim();
 }
 
-export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2DViewProps) {
+export function Live2DView({
+  aiText,
+  appState,
+  isAiAudioPlaying = false,
+  modelUrl,
+  onModelChange,
+}: Live2DViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
@@ -41,7 +49,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
   const isSpeakingRef = useRef(false);
   const lipSyncPhaseRef = useRef(0);
 
-  const isSpeaking = appState === 'SPEAKING';
+  const isSpeaking = isAiAudioPlaying || appState === 'SPEAKING';
 
   const [modelLoaded, setModelLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -55,9 +63,9 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
   const [showCustomInput, setShowCustomInput] = useState(!isPreset && !!storedUrl);
   const [customUrl, setCustomUrl] = useState(!isPreset ? storedUrl : '');
 
-  const resolvedModelUrl = storedUrl || LIVE2D_MODELS[0].url;
+  const resolvedModelUrl = storedUrl || DEFAULT_LIVE2D_MODEL_URL;
 
-  // Bubble stays visible through SPEAKING → LISTENING → IDLE,
+  // Bubble stays visible through SPEAKING -> LISTENING -> IDLE,
   // only clears when THINKING starts (new interaction, aiText reset to '')
   const bubbleText = useMemo(() => {
     if (aiText && appState !== 'THINKING') {
@@ -66,7 +74,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
     return '';
   }, [aiText, appState]);
 
-  // ── Initialize PixiJS + Live2D model ──
+  // Initialize PixiJS + Live2D model
   useEffect(() => {
     let cancelled = false;
     const wrapper = canvasWrapperRef.current;
@@ -81,7 +89,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
       };
       const hasCubism4 = typeof w.Live2DCubismCore !== 'undefined';
       const hasCubism2 = typeof w.Live2DModelWebGL !== 'undefined';
-      console.log('[Live2DView] Runtime check — Cubism4:', hasCubism4, 'Cubism2:', hasCubism2);
+      console.log('[Live2DView] Runtime check - Cubism4:', hasCubism4, 'Cubism2:', hasCubism2);
       setLoadLog(
         hasCubism4 || hasCubism2
           ? '运行时已加载，正在加载模型...'
@@ -108,6 +116,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
       wrapper.appendChild(app.view);
 
       Live2DModel.registerTicker(Ticker);
+      live2dConfig.sound = false;
 
       // Lip-sync ticker
       app.ticker.add((delta) => {
@@ -163,12 +172,12 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
 
         model.on('hit', () => {
           try {
-            model.motion('tap_body');
+            model.motion('idle');
           } catch {
             try {
-              model.motion('TapBody');
+              model.motion('Idle');
             } catch {
-              /* no tap motion */
+              /* no idle motion */
             }
           }
         });
@@ -229,12 +238,12 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
     };
   }, [resolvedModelUrl]);
 
-  // ── Sync speaking ref + trigger motion ──
+  // Sync speaking ref + trigger a silent model motion
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
 
     if (isSpeaking && modelRef.current) {
-      const groups = ['tap_body', 'TapBody', 'tap', 'Tap', 'idle', 'Idle'];
+      const groups = ['idle', 'Idle'];
       for (const g of groups) {
         try {
           modelRef.current.motion(g);
@@ -246,7 +255,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
     }
   }, [isSpeaking]);
 
-  // ── Handle resize ──
+  // Handle resize
   useEffect(() => {
     const handleResize = () => {
       const wrapper = canvasWrapperRef.current;
@@ -269,7 +278,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
     return () => window.removeEventListener('resize', handleResize);
   }, [modelLoaded]);
 
-  // ── Mouse eye tracking ──
+  // Mouse eye tracking
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const model = modelRef.current;
     const wrapper = canvasWrapperRef.current;
@@ -422,7 +431,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
 
       {/* Canvas + Speech Bubble */}
       <div className="live2d-stage">
-        {/* PIXI canvas mounts here — React must NOT manage children of this div */}
+        {/* PIXI canvas mounts here - React must NOT manage children of this div */}
         <div className="live2d-canvas-wrapper" ref={canvasWrapperRef} onMouseMove={handleMouseMove} />
 
         {/* Overlays positioned absolutely over the canvas (siblings, not children) */}
