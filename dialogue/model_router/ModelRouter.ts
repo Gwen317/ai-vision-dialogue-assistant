@@ -248,7 +248,14 @@ export class ModelRouter {
   private static openrouter: any = null;
   /** 可注入的自定义语音转写器（测试用） */
   private static speechTranscriber: ((audioBuffer: Buffer) => Promise<string>) | null = null;
-  private static ttsClient = new CosyVoiceTtsClient();
+  private static ttsClientInstance: CosyVoiceTtsClient | null = null;
+
+  private static get ttsClient(): CosyVoiceTtsClient {
+    if (!this.ttsClientInstance) {
+      this.ttsClientInstance = new CosyVoiceTtsClient();
+    }
+    return this.ttsClientInstance;
+  }
 
   /** 句级切分用的标点分隔符（按优先级排序） */
   private static readonly SENTENCE_DELIMITERS = ['。', '！', '？', '；', '.', '!', '?', '\n'];
