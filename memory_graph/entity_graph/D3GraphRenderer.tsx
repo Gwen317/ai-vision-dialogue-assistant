@@ -237,8 +237,16 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     });
 
     // ─── 力学仿真 ───
+    // 过滤掉引用了不存在节点的链接，防止 d3.forceLink 崩溃
+    const nodeIdSet = new Set(nodes.map(n => n.id));
+    const validLinks = links.filter(l => {
+      const s = typeof l.source === 'string' ? l.source : l.source.id;
+      const t = typeof l.target === 'string' ? l.target : l.target.id;
+      return nodeIdSet.has(s) && nodeIdSet.has(t);
+    });
+
     const simulation = d3.forceSimulation<GraphNode>(nodes)
-      .force('link', d3.forceLink<GraphNode, GraphLink>(links).id(d => d.id).distance(100))
+      .force('link', d3.forceLink<GraphNode, GraphLink>(validLinks).id(d => d.id).distance(100))
       .force('charge', d3.forceManyBody().strength(-180))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide().radius(30));
@@ -246,7 +254,7 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     // ─── 连线 ───
     const link = svg.append('g')
       .selectAll('line')
-      .data(links)
+      .data(validLinks)
       .enter().append('line')
       .attr('stroke', 'rgba(0, 242, 254, 0.15)')
       .attr('stroke-width', 1.5)
@@ -255,7 +263,7 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     // 连线标签
     const linkText = svg.append('g')
       .selectAll('text')
-      .data(links)
+      .data(validLinks)
       .enter().append('text')
       .style('fill', '#5a6a7e')
       .style('font-size', '9px')

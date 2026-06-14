@@ -12,6 +12,7 @@ import {
   Palette, RefreshCw, Plus, X, Cpu, Wrench, Tag, Sparkles, ScanLine, 
   Clock, Link2, FileText, User 
 } from 'lucide-react';
+import { Live2DView } from './Live2DView';
 
 function selectSpeechMimeType(): string {
   const candidates = [
@@ -29,6 +30,12 @@ interface TimelineMessage {
   text: string;
   timestamp: string;
   isStreaming?: boolean;
+}
+
+let _msgIdCounter = 0;
+function genId(prefix: string): string {
+  _msgIdCounter++;
+  return `${prefix}-${Date.now()}-${_msgIdCounter}`;
 }
 
 function parseTimelineText(text: string) {
@@ -105,6 +112,12 @@ export default function App() {
   const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(true);
   const graphNodeSetRef = useRef<Set<string>>(new Set());
+
+  // ─── Live2D 状态 ───
+  const [live2dModelUrl, setLive2dModelUrl] = useState<string>(
+    () => localStorage.getItem('live2d_model_url') || ''
+  );
+  const [live2dKey, setLive2dKey] = useState<number>(0);
 
   // HTML Media Elements Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -272,13 +285,13 @@ export default function App() {
             // Replace the temporary message with the final backend-transcribed text
             next[tempIndex] = {
               ...next[tempIndex],
-              id: 'user-' + Date.now(),
+              id: genId('user'),
               text: cleanText
             };
           } else {
             // Append if no temp message was found
             next.push({
-              id: 'user-' + Date.now(),
+              id: genId('user'),
               role: 'user',
               text: cleanText,
               timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -317,7 +330,7 @@ export default function App() {
           };
         } else {
           next.push({
-            id: 'model-' + Date.now(),
+            id: genId('model'),
             role: 'model',
             text: chunk,
             timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
@@ -353,7 +366,7 @@ export default function App() {
       setTimeline(prev => [
         ...prev,
         {
-          id: 'user-detect-log-' + Date.now(),
+          id: genId('user-detect-log'),
           role: 'user',
           text: `[🔍 智能分析与建链] 发现并识别到物体 "${analysis.refinedLabel}" (${analysis.type})。AI 分析: "${analysis.details}"`,
           timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -533,7 +546,7 @@ export default function App() {
     setTimeline(prev => [
       ...prev,
       {
-        id: 'user-manual-remember-' + Date.now(),
+        id: genId('user-manual-remember'),
         role: 'user',
         text: `[📷 记忆指令] ${queryText}`,
         timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -578,7 +591,7 @@ export default function App() {
     setTimeline(prev => [
       ...prev,
       {
-        id: 'user-manual-recall-' + Date.now(),
+        id: genId('user-manual-recall'),
         role: 'user',
         text: `[🔍 检索指令] ${queryText}`,
         timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -749,7 +762,7 @@ export default function App() {
             text: currentText
           };
         } else {
-          const newId = 'user-temp-' + Date.now();
+          const newId = genId('user-temp');
           tempUserMsgIdRef.current = newId;
           next.push({
             id: newId,
@@ -1057,7 +1070,7 @@ export default function App() {
           setTimeline(prev => [
             ...prev,
             {
-              id: 'user-detect-' + Date.now(),
+              id: genId('user-detect'),
               role: 'user',
               text: `[🔍 视觉检测] 我手里正拿着一个"${className}"，请根据当前画面，帮我检索并回忆有关它的情景记忆。`,
               timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -1579,8 +1592,20 @@ export default function App() {
           </div>
         </div>
 
-        {/* === CENTER: Dialogue Timeline & Controls === */}
+        {/* === CENTER: Live2D Character & Dialogue Timeline === */}
         <div className="cyber-card">
+          {/* Live2D Character Panel */}
+          <Live2DView
+            key={live2dKey}
+            aiText={aiResponse}
+            appState={appState}
+            modelUrl={live2dModelUrl || undefined}
+            onModelChange={(url) => {
+              setLive2dModelUrl(url);
+              setLive2dKey((k) => k + 1);
+            }}
+          />
+
           {/* Timeline Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0 }}>
             <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>

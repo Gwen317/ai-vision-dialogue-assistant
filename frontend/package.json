@@ -14,7 +14,12 @@
     "@tensorflow-models/coco-ssd": "^2.2.3",
     "@tensorflow/tfjs": "^4.20.0",
     "d3": "^7.9.0",
+    "live2d-widget-model-hijiki": "^1.0.5",
+    "live2d-widget-model-koharu": "^1.0.5",
+    "live2d-widget-model-shizuku": "^1.0.5",
     "lucide-react": "^1.18.0",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^6.5.10",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "socket.io-client": "^4.7.5"
