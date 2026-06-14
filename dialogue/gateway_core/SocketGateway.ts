@@ -37,6 +37,7 @@ interface VADEndPayload {
   startFrame?: string;
   endFrame?: string;
   existingNodes?: string[];
+  visualContext?: string[];
 }
 
 interface VADStartPayload {
@@ -51,6 +52,7 @@ interface TextQueryPayload {
   ttsProvider?: string;
   imageFrame?: string;
   existingNodes?: string[];
+  visualContext?: string[];
 }
 
 interface Session {
@@ -180,6 +182,7 @@ export class SocketGateway {
         }
         const requestId = ++session.activeRequestId;
         session.abortController = new AbortController();
+        socket.emit('tts_reset', { requestId });
 
         try {
           const speechEndedAt = payload.speechEndedAt ?? Date.now();
@@ -208,9 +211,11 @@ export class SocketGateway {
               speechEndedAt
             },
             session.abortController.signal,
+            requestId,
             payload.llmProvider,
             payload.ttsProvider,
-            payload.existingNodes
+            payload.existingNodes,
+            payload.visualContext
           );
         } catch (err) {
           console.error('Error processing text query:', err);
@@ -238,6 +243,7 @@ export class SocketGateway {
         }
         const requestId = ++session.activeRequestId;
         session.abortController = new AbortController();
+        socket.emit('tts_reset', { requestId });
 
         try {
           // Combine audio chunks into a single buffer
@@ -284,10 +290,12 @@ export class SocketGateway {
               speechEndedAt
             },
             session.abortController.signal,
+            requestId,
             localText,
             payload?.llmProvider,
             payload?.ttsProvider,
-            payload?.existingNodes
+            payload?.existingNodes,
+            payload?.visualContext
           );
         } catch (err: any) {
           if (err.name === 'AbortError') {
@@ -315,6 +323,7 @@ export class SocketGateway {
             session.abortController.abort();
             session.activeRequestId++;
             session.abortController = null;
+            socket.emit('tts_reset', { requestId: session.activeRequestId });
           }
 
           // 2. Mark the current-turn model message as interrupted and truncate to offset

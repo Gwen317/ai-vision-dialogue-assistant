@@ -330,6 +330,55 @@ export class ModelRouter {
     }
   }
 
+  private static readonly HANDHELD_OBJECT_CLASSES = new Set([
+    'cell phone', 'cup', 'bottle', 'scissors', 'book', 'handbag', 'banana', 'apple', 'orange', 'keyboard', 'mouse', 'laptop'
+  ]);
+
+  private static describeDetectedEntity(className: string): string {
+    const key = className.trim().toLowerCase();
+    if (key === 'person') {
+      return 'a person is visible in the live video frame (they appear on camera — NOT an object the user is holding in their hand)';
+    }
+    if (this.HANDHELD_OBJECT_CLASSES.has(key)) {
+      return `a ${className} is visible and may be held up or shown to the camera by the user`;
+    }
+    return `a ${className} is visible in the live video frame`;
+  }
+
+  private static buildMemoryQueryText(userSpeech: string, visualContext?: string[]): string {
+    const objects = [...new Set((visualContext ?? []).map(v => v.trim()).filter(Boolean))];
+    if (objects.length === 0) return userSpeech;
+    const descriptions = objects.map(o => this.describeDetectedEntity(o));
+    return `${userSpeech}\n[Camera context — background only: ${descriptions.join('; ')}]`;
+  }
+
+  private static buildVisualContextPrompt(visualContext?: string[]): string {
+    const objects = [...new Set((visualContext ?? []).map(v => v.trim()).filter(Boolean))];
+    if (objects.length === 0) return '';
+    const descriptions = objects.map(o => this.describeDetectedEntity(o));
+    return `\n[CURRENT CAMERA DETECTION — BACKGROUND ONLY] ${descriptions.join('; ')}\nThis is silent visual context from object detection — NOT the user's spoken request. Describe people as appearing in the frame, never as something the user is "holding". Only mention detections when relevant to the user's question.`;
+  }
+
+  private static getBaseSystemInstruction(visualContext?: string[]): string {
+    return 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
+      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
+      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
+      '2. Describe what you see accurately by entity type:\n' +
+      '   - People (person): they appear IN the video frame — e.g. "画面里有一位…", "我看到视频中有…". NEVER say the user is "holding" or "拿着" a person.\n' +
+      '   - Objects the user presents to camera: they may be holding or showing them — e.g. "你在镜头前展示的是…", "我看到你手里拿着…".\n' +
+      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过…", "你刚才在视频里给我看过的…").\n\n' +
+      'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.' +
+      this.buildVisualContextPrompt(visualContext);
+  }
+
+  private static buildRecalledMemoryPrompt(recalledMemory: { timestamp: Date; description: string; transcript: string; entityTags?: string[] }): string {
+    const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
+    const entityInfo = recalledMemory.entityTags?.length
+      ? `\nIdentified entities: [${recalledMemory.entityTags.join(', ')}]`
+      : '';
+    return `\n[RECALLED EPISODIC MEMORY — BACKGROUND CONTEXT ONLY] A past event from ${timeDiff} minutes ago was silently retrieved alongside the user's message. In that earlier video call, the feed included "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}${entityInfo}\nThis is supplementary background — NOT the user's primary request. Answer the user's actual question first. Only reference this memory when it is directly relevant to what they asked (e.g. they ask about the past, compare items, or mention something shown earlier). Do not hijack the reply to recite memory unprompted. When the recalled content involves a person, refer to them as having appeared in the video — never as an object the user was holding.`;
+  }
+
   public static async processInteraction(
     socket: Socket,
     audioBuffer: Buffer,
@@ -338,10 +387,12 @@ export class ModelRouter {
     timeline: TimelineEvent[],
     turnTiming: TurnTiming,
     signal: AbortSignal,
+    requestId: number,
     localText?: string,
     overrideLlmProvider?: string,
     overrideTtsProvider?: string,
-    existingNodes?: string[]
+    existingNodes?: string[],
+    visualContext?: string[]
   ): Promise<void> {
     const dashscopeKey = process.env.DASHSCOPE_API_KEY;
     const openrouterKey = process.env.OPENROUTER_API_KEY;
@@ -511,10 +562,11 @@ export class ModelRouter {
       return;
     }
 
-    // 2. Query Long-Term Multimodal Episodic Memory
+    // 2. Query Long-Term Multimodal Episodic Memory (silent background retrieval)
     console.log('Querying episodic memory...');
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
-    const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
+    const memoryQueryText = this.buildMemoryQueryText(userSpeech, visualContext);
+    const recalledMemory = await EpisodicMemoryService.queryMemory(memoryQueryText, currentImageBase64);
 
     // Guard: abort during memory query
     if (signal.aborted) {
@@ -523,19 +575,10 @@ export class ModelRouter {
     }
 
     // 3. Construct System Instruction / Prompt with memory context
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
-      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
-      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
-      '2. Refer to current images as what you see right now in the active video feed or what the user is currently showing you on camera (e.g. "我看到你正拿着...", "你在镜头前展示的是...").\n' +
-      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过...", "你刚才在视频里给我看过的...").\n\n' +
-      'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
+    let systemInstruction = this.getBaseSystemInstruction(visualContext);
     
     if (recalledMemory) {
-      const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000); // Minutes
-      const entityInfo = recalledMemory.entityTags?.length
-        ? `\nIdentified entities: [${recalledMemory.entityTags.join(', ')}]`
-        : '';
-      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}${entityInfo}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
+      systemInstruction += this.buildRecalledMemoryPrompt(recalledMemory);
     }
 
     // 4. Assemble current payload parts in event-time order.
@@ -627,7 +670,7 @@ export class ModelRouter {
 
             if (clause) {
               const currentIndex = ttsIndex++;
-              this.synthesizeAndEmit(socket, clause, currentIndex, signal, overrideTtsProvider);
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider);
             }
             break;
           }
@@ -645,7 +688,7 @@ export class ModelRouter {
     const remaining = sentenceBuffer.trim();
     if (remaining) {
       const currentIndex = ttsIndex++;
-      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, overrideTtsProvider);
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider);
     }
 
     console.log('Stream generation completed.');
@@ -676,9 +719,11 @@ export class ModelRouter {
     timeline: TimelineEvent[],
     turnTiming: TurnTiming,
     signal: AbortSignal,
+    requestId: number,
     overrideLlmProvider?: string,
     overrideTtsProvider?: string,
-    existingNodes?: string[]
+    existingNodes?: string[],
+    visualContext?: string[]
   ): Promise<void> {
     const dashscopeKey = process.env.DASHSCOPE_API_KEY;
     const openrouterKey = process.env.OPENROUTER_API_KEY;
@@ -699,25 +744,17 @@ export class ModelRouter {
 
     console.log('Querying episodic memory...');
     const currentImageBase64 = imageFrame?.imageBase64 ?? null;
-    const recalledMemory = await EpisodicMemoryService.queryMemory(userSpeech, currentImageBase64);
+    const memoryQueryText = this.buildMemoryQueryText(userSpeech, visualContext);
+    const recalledMemory = await EpisodicMemoryService.queryMemory(memoryQueryText, currentImageBase64);
 
     if (signal.aborted) {
       console.log('Text query aborted during memory query.');
       return;
     }
 
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
-      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
-      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
-      '2. Refer to current images as what you see right now in the active video feed or what the user is currently showing you on camera (e.g. "我看到你正拿着...", "你在镜头前展示的是...").\n' +
-      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过...", "你刚才在视频里给我看过的...").\n\n' +
-      'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
+    let systemInstruction = this.getBaseSystemInstruction(visualContext);
     if (recalledMemory) {
-      const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
-      const entityInfo = recalledMemory.entityTags?.length
-        ? `\nIdentified entities: [${recalledMemory.entityTags.join(', ')}]`
-        : '';
-      systemInstruction += `\n[RECALLED EPISODIC MEMORY] You have recalled a past event from ${timeDiff} minutes ago. The user previously showed a/an "${recalledMemory.description}" and the conversation was:\n${recalledMemory.transcript}${entityInfo}\nRefer to this past event naturally if the user asks about the past, mentions things shown earlier, or asks you to compare items.`;
+      systemInstruction += this.buildRecalledMemoryPrompt(recalledMemory);
     }
 
     const { messages, currentParts } = buildTimelineMessages({
@@ -800,7 +837,7 @@ export class ModelRouter {
 
             if (clause) {
               const currentIndex = ttsIndex++;
-              this.synthesizeAndEmit(socket, clause, currentIndex, signal, overrideTtsProvider);
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider);
             }
             break;
           }
@@ -812,7 +849,7 @@ export class ModelRouter {
     const remaining = sentenceBuffer.trim();
     if (remaining) {
       const currentIndex = ttsIndex++;
-      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, overrideTtsProvider);
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider);
     }
 
     modelMessageEntry.timestamp = Date.now();
@@ -838,6 +875,7 @@ export class ModelRouter {
     text: string,
     index: number,
     signal: AbortSignal,
+    requestId: number,
     overrideTtsProvider?: string
   ): Promise<void> {
     if (overrideTtsProvider === 'browser') {
@@ -857,7 +895,8 @@ export class ModelRouter {
 
       socket.emit('audio_tts_chunk', {
         audio: audioBuffer,
-        index
+        index,
+        requestId
       });
     } catch (err) {
       console.error(`Failed to synthesize text: "${text}", error:`, err);

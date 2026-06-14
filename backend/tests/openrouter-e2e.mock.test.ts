@@ -106,7 +106,8 @@ async function main() {
       speechStartedAt,
       speechEndedAt
     },
-    new AbortController().signal
+    new AbortController().signal,
+    1
   );
 
   const textChunks = socket.emitted

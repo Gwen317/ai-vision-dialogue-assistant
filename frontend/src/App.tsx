@@ -30,6 +30,7 @@ interface TimelineMessage {
   text: string;
   timestamp: string;
   isStreaming?: boolean;
+  kind?: 'detect';
 }
 
 let _msgIdCounter = 0;
@@ -38,37 +39,62 @@ function genId(prefix: string): string {
   return `${prefix}-${Date.now()}-${_msgIdCounter}`;
 }
 
-interface TimelineGroup {
-  key: string;
-  type: 'single' | 'detect';
-  messages: TimelineMessage[];
+function getDetectionLabel(className: string): string {
+  const key = className.trim().toLowerCase();
+  if (key === 'person') return '人物';
+  const labels: Record<string, string> = {
+    'cell phone': '手机',
+    cup: '杯子',
+    bottle: '瓶子',
+    scissors: '剪刀',
+    book: '书本',
+    keyboard: '键盘',
+    mouse: '鼠标',
+    laptop: '笔记本电脑',
+    handbag: '手提包',
+    banana: '香蕉',
+    apple: '苹果',
+    orange: '橙子'
+  };
+  return labels[key] ?? className;
 }
 
-function isDetectMsg(text: string): boolean {
-  return text.startsWith('[🔍');
+function formatDetectionLog(className: string): string {
+  const key = className.trim().toLowerCase();
+  if (key === 'person') return '画面中出现人物';
+  return `镜头前检测到「${getDetectionLabel(className)}」`;
 }
 
-function groupTimeline(messages: TimelineMessage[]): TimelineGroup[] {
-  const groups: TimelineGroup[] = [];
-  let i = 0;
-  while (i < messages.length) {
-    if (isDetectMsg(messages[i].text)) {
-      const batch: TimelineMessage[] = [];
-      while (i < messages.length && isDetectMsg(messages[i].text)) {
-        batch.push(messages[i]);
-        i++;
-      }
-      groups.push({
-        key: batch[0].id,
-        type: batch.length > 1 ? 'detect' : 'single',
-        messages: batch,
-      });
+function isAutoDetectMsg(msg: TimelineMessage): boolean {
+  if (msg.kind === 'detect') return true;
+  return msg.text.startsWith('[🔍 视觉检测]') || msg.text.startsWith('[🔍 智能分析与建链]');
+}
+
+function summarizeDetectMsg(text: string): string {
+  const match = text.match(/^\[.*?\]\s*(.*)$/s);
+  const body = match ? match[1].trim() : text.trim();
+  const labelMatch = body.match(/"([^"]+)"/);
+  if (labelMatch) {
+    if (text.includes('视觉检测')) return `检测到 ${labelMatch[1]}`;
+    if (text.includes('智能分析') || text.includes('建链')) return `已分析 ${labelMatch[1]}`;
+  }
+  return body.length > 48 ? `${body.slice(0, 48)}…` : body;
+}
+
+function splitTimeline(messages: TimelineMessage[]): {
+  conversation: TimelineMessage[];
+  detectLog: TimelineMessage[];
+} {
+  const conversation: TimelineMessage[] = [];
+  const detectLog: TimelineMessage[] = [];
+  for (const msg of messages) {
+    if (isAutoDetectMsg(msg)) {
+      detectLog.push(msg);
     } else {
-      groups.push({ key: messages[i].id, type: 'single', messages: [messages[i]] });
-      i++;
+      conversation.push(msg);
     }
   }
-  return groups;
+  return { conversation, detectLog };
 }
 
 function parseTimelineText(text: string) {
@@ -145,7 +171,7 @@ export default function App() {
   const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(true);
   const graphNodeSetRef = useRef<Set<string>>(new Set());
-  const [expandedDetectGroups, setExpandedDetectGroups] = useState<Set<string>>(new Set());
+  const [detectLogExpanded, setDetectLogExpanded] = useState(false);
 
   // ─── Live2D 状态 ───
   const [live2dModelUrl, setLive2dModelUrl] = useState<string>(
@@ -193,6 +219,8 @@ export default function App() {
   const isAudioPlayingRef = useRef<boolean>(false);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const isCosyVoiceActiveRef = useRef<boolean>(false);
+  const activeTtsRequestIdRef = useRef<number>(0);
+  const detectedObjectsRef = useRef<string[]>([]);
   const [interruptThreshold, setInterruptThreshold] = useState<number>(0.85);
   const interruptThresholdRef = useRef<number>(0.85);
   const speechProbabilityRef = useRef<number>(0);
@@ -212,6 +240,23 @@ export default function App() {
     isAudioPlayingRef.current = false;
     isCosyVoiceActiveRef.current = false;
   };
+
+  const stopAiPlayback = useCallback(() => {
+    window.speechSynthesis.cancel();
+    speechQueueRef.current = [];
+    isSpeakingRef.current = false;
+
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+    isCosyVoiceActiveRef.current = false;
+  }, []);
 
   useEffect(() => {
     interruptThresholdRef.current = interruptThreshold;
@@ -259,9 +304,18 @@ export default function App() {
       console.log('Disconnected from backend gateway');
     });
 
-    socket.on('audio_tts_chunk', (chunk: { audio: ArrayBuffer; index: number }) => {
+    socket.on('tts_reset', ({ requestId }: { requestId: number }) => {
+      activeTtsRequestIdRef.current = requestId;
+      stopAiPlayback();
+      resetAssistantStreamState();
+    });
+
+    socket.on('audio_tts_chunk', (chunk: { audio: ArrayBuffer; index: number; requestId?: number }) => {
       if (ttsProviderRef.current !== 'cosyvoice') {
-        return; // Ignore backend audio chunks if cosyvoice is disabled
+        return;
+      }
+      if (chunk.requestId !== undefined && chunk.requestId !== activeTtsRequestIdRef.current) {
+        return;
       }
       console.log(`Received audio TTS chunk index ${chunk.index}, bytes=${chunk.audio.byteLength}`);
       isCosyVoiceActiveRef.current = true;
@@ -400,9 +454,10 @@ export default function App() {
       setTimeline(prev => [
         ...prev,
         {
-          id: genId('user-detect-log'),
+          id: genId('detect-log'),
           role: 'user',
-          text: `[🔍 智能分析与建链] 发现并识别到物体 "${analysis.refinedLabel}" (${analysis.type})。AI 分析: "${analysis.details}"`,
+          kind: 'detect',
+          text: `[🔍 智能分析与建链] "${analysis.refinedLabel}" (${analysis.type}) — ${analysis.details}`,
           timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
         }
       ]);
@@ -427,7 +482,9 @@ export default function App() {
     // 2. FSM state change listener
     fsmRef.current.registerStateListener((state) => {
       setAppState(state);
-      if (state === 'LISTENING' || state === 'IDLE') {
+      if (state === 'THINKING') {
+        stopAiPlayback();
+      } else if (state === 'LISTENING' || state === 'IDLE') {
         // Stop any current text-to-speech playing (browser)
         window.speechSynthesis.cancel();
         speechQueueRef.current = [];
@@ -491,21 +548,13 @@ export default function App() {
     }
   }, [timeline]);
 
-  const groupedTimeline = useMemo(() => groupTimeline(timeline), [timeline]);
-
-  const toggleDetectGroup = useCallback((key: string) => {
-    setExpandedDetectGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const { conversation, detectLog } = useMemo(() => splitTimeline(timeline), [timeline]);
 
   const clearLogs = () => {
     setTimeline([]);
     setTranscription('');
     setAiResponse('');
+    setDetectLogExpanded(false);
     localSpeechTextRef.current = '';
     tempUserMsgIdRef.current = null;
     setDetectedObjects([]);
@@ -539,29 +588,14 @@ export default function App() {
    */
   const stopAiSpeaking = useCallback(() => {
     console.log('[App] Manually stopping AI speaking...');
-    
-    // 1. 取消浏览器 SpeechSynthesis 播音
-    window.speechSynthesis.cancel();
+    stopAiPlayback();
 
-    // 2. 停止当前 Web Audio (CosyVoice) 播放
-    if (audioSourceRef.current) {
-      try {
-        audioSourceRef.current.stop();
-      } catch (e) {}
-      audioSourceRef.current = null;
-    }
-    audioQueueRef.current = [];
-    nextPlayIndexRef.current = 0;
-    isAudioPlayingRef.current = false;
-    isSpeakingRef.current = false;
-    isCosyVoiceActiveRef.current = false;
-
-    // 3. 通知后端中断生成
+    // 通知后端中断生成
     socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
 
-    // 4. 重置 FSM 状态为 LISTENING
+    // 重置 FSM 状态为 LISTENING
     fsmRef.current.transitionTo('LISTENING');
-  }, []);
+  }, [stopAiPlayback]);
 
   /**
    * 手动指令：命令 AI 记住当前画面的物品（以技能形式触发）
@@ -573,9 +607,11 @@ export default function App() {
     
     // 自动判断当前是否有识别出来的 Coco-SSD 物品
     const detectedName = detectedObjects.length > 0 ? detectedObjects[0].class : '';
-    const queryText = detectedName 
-      ? `请帮我记住我手中的这个 "${detectedName}"，分析并将其录入我的实体记忆图谱中。`
-      : '请帮我分析并记住我当前画面中的物品，将其录入到我的实体记忆图谱中。';
+    const queryText = detectedName
+      ? detectedName.toLowerCase() === 'person'
+        ? '请帮我记住画面中出现的人物，分析并将其录入我的实体记忆图谱中。'
+        : `请帮我记住镜头前展示的「${getDetectionLabel(detectedName)}」，分析并将其录入我的实体记忆图谱中。`
+      : '请帮我分析并记住我当前画面中的内容，将其录入到我的实体记忆图谱中。';
 
     console.log('[App] Manual remember object triggered:', detectedName);
 
@@ -585,7 +621,8 @@ export default function App() {
       llmProvider: llmProviderRef.current,
       ttsProvider: ttsProviderRef.current,
       imageFrame: base64Frame,
-      existingNodes: Array.from(graphNodeSetRef.current)
+      existingNodes: Array.from(graphNodeSetRef.current),
+      visualContext: detectedObjectsRef.current
     });
 
     setTimeline(prev => [
@@ -620,17 +657,17 @@ export default function App() {
     const frame = videoCaptureRef.current.getLatestFrame?.() || null;
     const base64Frame = frame ? frame.imageBase64 : undefined;
 
-    const queryText = `帮我检索并回忆关于“${cleanKeyword}”的长程多模态情景记忆。`;
+    const queryText = `关于「${cleanKeyword}」，我们之前聊过什么？`;
 
-    console.log('[App] Manual RAG recall triggered for keyword:', cleanKeyword);
+    console.log('[App] Manual memory recall query for keyword:', cleanKeyword);
 
-    // 发送 text_query 以便 AI 回忆情景记忆并以语音文字回复
     socketRef.current?.emit('text_query', {
       text: queryText,
       llmProvider: llmProviderRef.current,
       ttsProvider: ttsProviderRef.current,
       imageFrame: base64Frame,
-      existingNodes: Array.from(graphNodeSetRef.current)
+      existingNodes: Array.from(graphNodeSetRef.current),
+      visualContext: [cleanKeyword, ...detectedObjectsRef.current]
     });
 
     setTimeline(prev => [
@@ -1100,36 +1137,24 @@ export default function App() {
       // Register callback to update bounding boxes overlay
       videoCaptureRef.current.registerOnPredictionsDetected((predictions) => {
         setDetectedObjects(predictions);
+        detectedObjectsRef.current = predictions.map((p: { class: string }) => p.class);
       });
 
-      // Register local object detection callback to auto-trigger memory RAG retrieval
+      // 视觉检测仅做静默分析与日志记录；情景记忆检索在用户主动发言时由后端一并注入
       videoCaptureRef.current.registerOnObjectDetected((className, base64Frame) => {
-        // Only auto-trigger if the system is currently LISTENING or IDLE (ready for interaction)
-        const currentState = fsmRef.current.getCurrentState();
-        if (currentState === 'LISTENING' || currentState === 'IDLE') {
-          console.log(`[App] Auto-triggering RAG query for detected object: ${className}`);
+        console.log(`[App] Object detected: ${className} (silent analysis only)`);
 
-          // 发起 AI 智能 analysis 与关系评估后，再动态加入实体图谱
-          emitAnalyzeDetectedObject(className, base64Frame);
-          
-          setTimeline(prev => [
-            ...prev,
-            {
-              id: genId('user-detect'),
-              role: 'user',
-              text: `[🔍 视觉检测] 我手里正拿着一个"${className}"，请根据当前画面，帮我检索并回忆有关它的情景记忆。`,
-              timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
-            }
-          ]);
-
-          socketRef.current?.emit('text_query', {
-            text: `我手里拿着一个"${className}"，帮我回忆关于它的长程多模态情景记忆。`,
-            llmProvider: llmProviderRef.current,
-            ttsProvider: ttsProviderRef.current,
-            imageFrame: base64Frame,
-            existingNodes: Array.from(graphNodeSetRef.current)
-          });
-        }
+        emitAnalyzeDetectedObject(className, base64Frame);
+        setTimeline(prev => [
+          ...prev,
+          {
+            id: genId('detect'),
+            role: 'user',
+            kind: 'detect',
+            text: `[🔍 视觉检测] ${formatDetectionLog(className)}`,
+            timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+          }
+        ]);
       });
 
       // Start VideoCapture sliding window buffer (2fps) with QualityGuard checks on the DOM video element
@@ -1260,7 +1285,8 @@ export default function App() {
         ttsProvider: ttsProviderRef.current,
         startFrame: startFrame ? startFrame.imageBase64 : undefined,
         endFrame: endFrame ? endFrame.imageBase64 : undefined,
-        existingNodes: Array.from(graphNodeSetRef.current)
+        existingNodes: Array.from(graphNodeSetRef.current),
+        visualContext: detectedObjectsRef.current
       });
       isRecordingSpeechRef.current = false;
       mediaRecorderRef.current = null;
@@ -1661,61 +1687,59 @@ export default function App() {
                 {appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问，直接对着麦克风说话即可开始录音...'}
               </div>
             ) : (
-              groupedTimeline.map((group) => {
-                if (group.type === 'single') {
-                  const msg = group.messages[0];
-                  return (
-                    <div key={group.key} className="timeline-item">
-                      <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
-                      <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
-                        <div className="timeline-meta">
-                          <span className={`timeline-role-${msg.role}`}>
-                            {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
-                          </span>
-                          <span className="timeline-time">{msg.timestamp}</span>
-                        </div>
-                        <div className="timeline-text">
-                          {parseTimelineText(msg.text)}
-                          {msg.isStreaming && <span className="typing-cursor"></span>}
-                        </div>
+              <>
+                {conversation.map((msg) => (
+                  <div key={msg.id} className="timeline-item">
+                    <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
+                    <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
+                      <div className="timeline-meta">
+                        <span className={`timeline-role-${msg.role}`}>
+                          {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
+                        </span>
+                        <span className="timeline-time">{msg.timestamp}</span>
+                      </div>
+                      <div className="timeline-text">
+                        {parseTimelineText(msg.text)}
+                        {msg.isStreaming && <span className="typing-cursor"></span>}
                       </div>
                     </div>
-                  );
-                }
+                  </div>
+                ))}
 
-                const isExpanded = expandedDetectGroups.has(group.key);
-                const latest = group.messages[group.messages.length - 1];
-                return (
-                  <div key={group.key} className="timeline-item">
-                    <div className="timeline-node timeline-node-user"></div>
-                    <div className="timeline-bubble timeline-bubble-user">
+                {detectLog.length > 0 && (
+                  <div className="timeline-item timeline-item-detect">
+                    <div className="timeline-node timeline-node-detect"></div>
+                    <div className="timeline-bubble timeline-bubble-detect">
                       <div
                         className="detect-group-header"
-                        onClick={() => toggleDetectGroup(group.key)}
+                        onClick={() => setDetectLogExpanded(v => !v)}
+                        title="点击展开/收起视觉识别记录"
                       >
-                        <ScanLine size={13} />
-                        <span style={{ fontWeight: 600 }}>
-                          智能分析与建链 · {group.messages.length} 条
-                        </span>
-                        <span className="detect-group-time">{latest.timestamp}</span>
-                        <span className="detect-group-toggle">
-                          {isExpanded ? '收起 ▲' : '展开 ▼'}
-                        </span>
+                        <ScanLine size={12} />
+                        <span className="detect-group-title">视觉识别</span>
+                        <span className="detect-group-badge">{detectLog.length}</span>
+                        {!detectLogExpanded && (
+                          <span className="detect-group-preview">
+                            {summarizeDetectMsg(detectLog[detectLog.length - 1].text)}
+                          </span>
+                        )}
+                        <span className="detect-group-time">{detectLog[detectLog.length - 1].timestamp}</span>
+                        <span className="detect-group-toggle">{detectLogExpanded ? '▲' : '▼'}</span>
                       </div>
-                      {isExpanded && (
+                      {detectLogExpanded && (
                         <div className="detect-group-list">
-                          {group.messages.map(msg => (
+                          {detectLog.map(msg => (
                             <div key={msg.id} className="detect-group-item">
                               <span className="detect-group-item-time">{msg.timestamp}</span>
-                              {parseTimelineText(msg.text)}
+                              <span>{summarizeDetectMsg(msg.text)}</span>
                             </div>
                           ))}
                         </div>
                       )}
                     </div>
                   </div>
-                );
-              })
+                )}
+              </>
             )}
             <div ref={timelineEndRef} />
           </div>

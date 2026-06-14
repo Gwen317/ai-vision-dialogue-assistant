@@ -362,57 +362,110 @@ h1, h2, h3 {
 }
 
 /* ========================================
-   Collapsed Detect Group (智能分析折叠组)
+   Collapsed Detect Log (视觉识别折叠面板)
    ======================================== */
+.timeline-item-detect {
+  margin-bottom: 8px;
+}
+
+.timeline-node-detect {
+  color: #22d3ee;
+  background-color: #22d3ee;
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.5);
+  width: 8px;
+  height: 8px;
+  top: 16px;
+}
+
+.timeline-bubble-detect {
+  padding: 4px 8px;
+  border-color: rgba(6, 182, 212, 0.15);
+  background: rgba(6, 182, 212, 0.03);
+  box-shadow: none;
+}
+
 .detect-group-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
   background: rgba(6, 182, 212, 0.06);
-  border: 1px solid rgba(6, 182, 212, 0.2);
+  border: 1px solid rgba(6, 182, 212, 0.18);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   color: #22d3ee;
   font-family: 'Orbitron', sans-serif;
   transition: all 0.2s ease;
   user-select: none;
+  min-height: 26px;
+  line-height: 1.2;
 }
 .detect-group-header:hover {
   background: rgba(6, 182, 212, 0.12);
-  border-color: rgba(6, 182, 212, 0.4);
+  border-color: rgba(6, 182, 212, 0.35);
+}
+.detect-group-title {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.detect-group-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(6, 182, 212, 0.2);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.detect-group-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: 'Outfit', sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .detect-group-time {
-  font-size: 10px;
+  font-size: 9px;
   color: #64748b;
-  margin-left: auto;
+  flex-shrink: 0;
   font-family: monospace;
 }
 .detect-group-toggle {
-  font-size: 10px;
-  color: #94a3b8;
-  white-space: nowrap;
+  font-size: 9px;
+  color: #64748b;
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
 }
 .detect-group-list {
-  margin-top: 8px;
+  margin-top: 4px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
+  max-height: 160px;
+  overflow-y: auto;
 }
 .detect-group-item {
-  padding: 6px 10px;
-  border-left: 2px solid rgba(6, 182, 212, 0.3);
-  font-size: 13px;
-  color: #e2e8f0;
-  line-height: 1.5;
+  padding: 3px 8px;
+  border-left: 2px solid rgba(6, 182, 212, 0.25);
+  font-size: 11px;
+  color: #cbd5e1;
+  line-height: 1.4;
 }
 .detect-group-item-time {
   display: inline-block;
-  font-size: 10px;
+  font-size: 9px;
   color: #64748b;
   font-family: monospace;
-  margin-right: 8px;
+  margin-right: 6px;
 }
 
 /* ========================================

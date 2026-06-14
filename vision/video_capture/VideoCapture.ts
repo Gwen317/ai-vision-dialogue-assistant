@@ -121,38 +121,45 @@ export class VideoCapture {
           
           const now = Date.now();
 
-          // 1. Target typical everyday objects in the user's hand/feed
+          // 每帧只触发置信度最高的一条检测，避免同一画面多物体/多人同时触发
           const targetClasses = ['cell phone', 'cup', 'bottle', 'scissors', 'book', 'keyboard', 'mouse', 'laptop', 'handbag', 'banana', 'apple', 'orange'];
-          
-          const match = predictions.find(p => targetClasses.includes(p.class) && p.score > 0.65);
-          if (match && this.onObjectDetectedCallback) {
-            const className = match.class;
-            const lastAlert = this.cooldowns.get(className) || 0;
-            
-            if (now - lastAlert > this.cooldownMs) {
-              this.cooldowns.set(className, now);
-              console.log(`[VideoCapture] Detected target: "${className}" with confidence ${(match.score * 100).toFixed(0)}%`);
-              this.onObjectDetectedCallback(className, base64);
+          type DetectionCandidate = { className: string; score: number; base64: string };
+          const candidates: DetectionCandidate[] = [];
+
+          for (const p of predictions) {
+            if (targetClasses.includes(p.class) && p.score > 0.65) {
+              candidates.push({ className: p.class, score: p.score, base64 });
             }
           }
 
-          // 2. Target people for face/role recognition
           const people = predictions.filter(p => p.class === 'person' && p.score > 0.6);
-          people.forEach((p, idx) => {
-            const key = `person_${idx}`;
-            const lastAlert = this.cooldowns.get(key) || 0;
-            
-            if (now - lastAlert > this.cooldownMs) {
-              this.cooldowns.set(key, now);
-              console.log(`[VideoCapture] Detected person [${idx}] with confidence ${(p.score * 100).toFixed(0)}%`);
-              
-              const cropped = this.getCroppedFrame(p.bbox);
-              if (cropped && this.onObjectDetectedCallback) {
-                const cropBase64 = cropped.split(',')[1];
-                this.onObjectDetectedCallback('person', cropBase64);
-              }
+          if (people.length > 0) {
+            const bestPerson = people.reduce((a, b) => (a.score >= b.score ? a : b));
+            const cropped = this.getCroppedFrame(bestPerson.bbox);
+            if (cropped) {
+              candidates.push({
+                className: 'person',
+                score: bestPerson.score,
+                base64: cropped.split(',')[1]
+              });
             }
-          });
+          }
+
+          if (candidates.length === 0 || !this.onObjectDetectedCallback) {
+            return;
+          }
+
+          const best = candidates.reduce((a, b) => (a.score >= b.score ? a : b));
+          const classKey = best.className === 'person' ? 'person' : best.className;
+          const lastClassAlert = this.cooldowns.get(classKey) || 0;
+
+          if (now - lastClassAlert > this.cooldownMs) {
+            this.cooldowns.set(classKey, now);
+            console.log(
+              `[VideoCapture] Detected target: "${best.className}" with confidence ${(best.score * 100).toFixed(0)}%`
+            );
+            this.onObjectDetectedCallback(best.className, best.base64);
+          }
         } catch (err) {
           console.error('[VideoCapture] Object detection inference error:', err);
         }
