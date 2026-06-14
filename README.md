@@ -9,12 +9,13 @@
 
 系统录制的 4 分钟完整功能演示视频已放置在项目根目录下。在 GitHub 仓库主页面，系统将自动把下方标签渲染为网页播放器。您可直接在线播放，或点击下方链接下载观看：
 
-https://github.com/Gwen317/ai-vision-dialogue-assistant/raw/main/demo_video.mp4
-
 <div align="center">
-  <video src="https://github.com/Gwen317/ai-vision-dialogue-assistant/raw/main/demo_video.mp4" width="100%" controls></video>
-  <p>🎬 <b><a href="https://github.com/Gwen317/ai-vision-dialogue-assistant/blob/main/demo_video.mp4">点击此处在线查看 / 下载项目演示视频 (demo_video.mp4)</a></b></p>
+  <a href="https://github.com/Gwen317/ai-vision-dialogue-assistant/blob/main/demo_video.mp4">
+    <img src="demo_video_cover.svg" width="100%" alt="点击在线播放演示视频" />
+  </a>
+  <p>🎬 <b><a href="https://github.com/Gwen317/ai-vision-dialogue-assistant/blob/main/demo_video.mp4">点击上方封面图或此处，在线观看项目演示视频 (demo_video.mp4)</a></b></p>
 </div>
+
 
 
 
