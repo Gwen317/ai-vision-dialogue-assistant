@@ -41,9 +41,9 @@
 
 ---
 
-## 👁️ 二、 vision (视频流捕获与音画同步模块)
+## 👁️ 二、 vision (视频流捕获与画质预检模块)
 
-本模块负责摄像头的图像帧滑动窗口暂存、本地画质去模糊/去曝光预检，以及基于字词时间戳的 Canvas 绘图同步绘制。
+本模块负责摄像头的图像帧滑动窗口暂存以及本地画质去模糊/去曝光预检，过滤无效或低画质图像以降低 API 成本。
 
 ### 1. `vision/video_capture/VideoCapture.ts`
 * **功能描述**：端侧摄像头视频帧滑窗管理器。
@@ -58,20 +58,7 @@
   - [x] 实现 **Laplacian 方差算子模糊度预检**（拉普拉斯方差低于 12.0 时，判定画面抖动模糊，拦截发送并本地 TTS 播报提醒）。
   - [x] 实现 **平均亮度检测**：基于 $Y = 0.299R + 0.587G + 0.114B$ 计算画面平均灰度值，判定是否过暗（$Y < 40$）或过曝（$Y > 240$），并予以用户纠正引导。
 
-### 3. `vision/drawing_sync/CanvasSyncRenderer.ts`
-* **功能描述**：端侧 Canvas 同步教学画板。
-* **开发任务清单**：
-  - [ ] 绘制科技感（Sci-fi）风格的背景网格线。
-  - [ ] 提供文本正则表达式解析器，捕获文本中夹带的 `[[draw:type:params]]` 指令。
-  - [ ] 实现线条（`line`，支持匀速伸展动效）、圆形（`circle`）、矩形（`rect`）、文字（`text`）及清屏（`clear`）等绘制命令的执行器。
-
-### 4. `vision/drawing_instructions/DrawingInstructionGenerator.ts`
-* **功能描述**：后端 Canvas 绘图指令协议封装生成器。
-* **开发任务清单**：
-  - [ ] 封装标准的指令生成静态助手类。
-  - [ ] 提供 `line()`、`circle()`、`rect()`、`text()`、`clear()` 的格式化包装，确保大模型调用工具（Tool Call）或拼接回复流时输出的标签协议百分之百符合前端解析规程。
-
-### 5. 本地 COCO-SSD 目标检测与调试面板 (VideoCapture 扩展功能)
+### 3. 本地 COCO-SSD 目标检测与调试面板 (VideoCapture 扩展功能)
 * **功能描述**：端侧基于 TensorFlow.js COCO-SSD 的本地物体检测，与 RAG 检索对接及画面校准。
 * **开发任务清单**：
   - [x] 基于 `@tensorflow-models/coco-ssd` 实现本地 500ms（2fps）频率的日常物体检测与追踪。

@@ -10,6 +10,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 // 强制使用内存模式
 process.env.QDRANT_URL = '';
 process.env.EMBEDDING_PROVIDER = 'mock';
@@ -51,6 +54,10 @@ async function testQdrantInMemory() {
   console.log('\n📦 Test 1: QdrantClient 内存降级模式');
 
   const client = new QdrantClient();
+  client['localFilePath'] = path.resolve(__dirname, 'memories_test.json');
+  if (fs.existsSync(client['localFilePath'])) {
+    fs.unlinkSync(client['localFilePath']);
+  }
   await client.initialize();
 
   assert(client.getMode() === 'in-memory', 'Should be in in-memory mode');
@@ -159,6 +166,10 @@ async function testEpisodicMemoryFullPipeline() {
 
   // 注入 Mock 依赖
   const qdrant = new QdrantClient();
+  qdrant['localFilePath'] = path.resolve(__dirname, 'memories_test.json');
+  if (fs.existsSync(qdrant['localFilePath'])) {
+    fs.unlinkSync(qdrant['localFilePath']);
+  }
   await qdrant.initialize();
   const mock = new MockEmbeddingProvider();
 
@@ -220,9 +231,9 @@ async function testModelRouterObjectAnalysis() {
   assert(['device', 'tool', 'wire', 'concept', 'capacitor'].includes(resPhone.type), `cell phone type should be valid category: ${resPhone.type}`);
   assert(Array.isArray(resPhone.relations), 'relations should be an array');
 
-  // 2. 噪音实体检测（例如 person）
+  // 2. 人物实体检测（例如 person，应作为 Gwen/Friend 录入）
   const resPerson = await ModelRouter.analyzeDetectedObject([], 'person', null, []);
-  assert(resPerson.shouldAdd === false, 'person should be filtered out (shouldAdd=false)');
+  assert(resPerson.shouldAdd === true, 'person should be recorded as user/friend (shouldAdd=true)');
 }
 
 // ─────────────────────────────────────────────
@@ -239,6 +250,12 @@ async function runAllTests() {
   await testMockEmbedding();
   await testEpisodicMemoryFullPipeline();
   await testModelRouterObjectAnalysis();
+
+  // 清理测试临时文件
+  const testFile = path.resolve(__dirname, 'memories_test.json');
+  if (fs.existsSync(testFile)) {
+    fs.unlinkSync(testFile);
+  }
 
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`  结果: ${passed} passed, ${failed} failed`);

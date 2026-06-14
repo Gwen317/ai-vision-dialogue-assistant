@@ -46,6 +46,10 @@ interface InMemoryPoint {
   payload: MemoryPoint['payload'];
 }
 
+// [COST CONTROL: In-Memory Database Fallback]
+// The In-Memory fallback mode stores vector points locally in a JSON file and processes cosine similarity queries
+// entirely in-memory using pure JS. This saves 100% of the cost of renting/hosting cloud vector database instances (such as Qdrant Cloud),
+// allowing the system to run on low-end servers or local machines with zero cloud database overhead.
 export class QdrantClient {
   private url: string;
   private apiKey: string;

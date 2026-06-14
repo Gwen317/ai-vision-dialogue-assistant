@@ -322,13 +322,15 @@ export class SocketGateway {
         if (session) {
           console.log(`Interrupt received from client ${socket.id} at offset ${data.offset}`);
           
-          // 1. Cancel ongoing LLM request
+          // 1. Cancel ongoing LLM request (if any)
           if (session.abortController) {
             session.abortController.abort();
-            session.activeRequestId++;
             session.abortController = null;
-            socket.emit('tts_reset', { requestId: session.activeRequestId });
           }
+
+          // Always invalidate in-flight TTS chunks — LLM may have finished while audio still plays
+          session.activeRequestId++;
+          socket.emit('tts_reset', { requestId: session.activeRequestId });
 
           // 2. Mark the current-turn model message as interrupted and truncate to offset
           if (session.timeline.length > 0) {

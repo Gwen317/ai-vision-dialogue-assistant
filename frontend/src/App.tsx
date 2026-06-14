@@ -3,13 +3,12 @@ import { io, Socket } from 'socket.io-client';
 import { FsmController } from '../../dialogue/vad_capture/FsmController';
 import type { AppState } from '../../dialogue/vad_capture/FsmController';
 import { AudioAcousticProcessor } from '../../dialogue/acoustic_reverb/AudioAcousticProcessor';
-import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer';
 import { MicVAD } from '@ricky0123/vad-web';
 import { VideoCapture } from '../../vision/video_capture/VideoCapture';
 import { D3GraphRenderer, type GraphNode, type GraphLink } from '../../memory_graph/entity_graph/D3GraphRenderer';
 import { 
   Brain, VolumeX, Camera, Search, Video, Eye, Download, MessageSquare, 
-  Palette, RefreshCw, Plus, X, Cpu, Wrench, Tag, Sparkles, ScanLine, 
+  Activity, RefreshCw, Plus, X, Cpu, Wrench, Tag, Sparkles, ScanLine, 
   Clock, Link2, FileText, User 
 } from 'lucide-react';
 import { Live2DView } from './Live2DView';
@@ -242,7 +241,6 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null);
   const fsmRef = useRef<FsmController>(new FsmController());
   const acousticProcessorRef = useRef<AudioAcousticProcessor>(new AudioAcousticProcessor());
-  const canvasRendererRef = useRef<CanvasSyncRenderer | null>(null);
   const videoCaptureRef = useRef<VideoCapture>(new VideoCapture());
 
   // Audio Recording & Playback Refs
@@ -275,9 +273,10 @@ export default function App() {
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const isCosyVoiceActiveRef = useRef<boolean>(false);
   const activeTtsRequestIdRef = useRef<number>(0);
+  const ttsChunkCountRef = useRef<number>(0);
   const detectedObjectsRef = useRef<string[]>([]);
-  const [interruptThreshold, setInterruptThreshold] = useState<number>(0.85);
-  const interruptThresholdRef = useRef<number>(0.85);
+  const [interruptThreshold, setInterruptThreshold] = useState<number>(0.55);
+  const interruptThresholdRef = useRef<number>(0.55);
   const speechProbabilityRef = useRef<number>(0);
   const [llmProvider, setLlmProvider] = useState<string>(() => localStorage.getItem('llm_provider') || 'dashscope');
   const llmProviderRef = useRef<string>(localStorage.getItem('llm_provider') || 'dashscope');
@@ -297,6 +296,7 @@ export default function App() {
     charOffsetRef.current = 0;
     audioQueueRef.current = [];
     nextPlayIndexRef.current = 0;
+    ttsChunkCountRef.current = 0;
     isAudioPlayingRef.current = false;
     isCosyVoiceActiveRef.current = false;
     setIsAiAudioPlaying(false);
@@ -319,6 +319,52 @@ export default function App() {
     isAudioPlayingRef.current = false;
     isCosyVoiceActiveRef.current = false;
   }, []);
+
+  const isAiOutputActive = useCallback((): boolean => {
+    const state = fsmRef.current.getCurrentState();
+    return (
+      isSpeakingRef.current ||
+      isAudioPlayingRef.current ||
+      isCosyVoiceActiveRef.current ||
+      speechQueueRef.current.length > 0 ||
+      audioQueueRef.current.length > 0 ||
+      state === 'SPEAKING' ||
+      state === 'THINKING'
+    );
+  }, []);
+
+  const performUserInterrupt = useCallback(() => {
+    console.log('Interruption detected!');
+    stopAiPlayback();
+    activeTtsRequestIdRef.current += 1;
+
+    socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
+
+    setTimeline(prev => {
+      const next = [...prev];
+      const lastMsgIndex = next.map(m => m.role).lastIndexOf('model');
+      if (lastMsgIndex !== -1) {
+        const lastMsg = next[lastMsgIndex];
+        if (charOffsetRef.current < lastMsg.text.length) {
+          next[lastMsgIndex] = {
+            ...lastMsg,
+            text: lastMsg.text.substring(0, charOffsetRef.current) + '... [用户已打断]',
+            isStreaming: false
+          };
+        }
+      }
+      return next;
+    });
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+        recognitionRef.current.start();
+      } catch (e) {
+        console.log('Error restarting ASR on interrupt:', e);
+      }
+    }
+  }, [stopAiPlayback]);
 
   useEffect(() => {
     interruptThresholdRef.current = interruptThreshold;
@@ -387,6 +433,7 @@ export default function App() {
       }
       console.log(`Received audio TTS chunk index ${chunk.index}, bytes=${chunk.audio.byteLength}`);
       isCosyVoiceActiveRef.current = true;
+      ttsChunkCountRef.current += 1;
       audioQueueRef.current.push({ index: chunk.index, audio: chunk.audio });
       audioQueueRef.current.sort((a, b) => a.index - b.index);
       if (!isAudioPlayingRef.current) {
@@ -574,8 +621,8 @@ export default function App() {
       setAppState(state);
       if (state === 'THINKING') {
         stopAiPlayback();
-      } else if (state === 'LISTENING' || state === 'IDLE') {
-        // Stop any current text-to-speech playing (browser)
+      } else if (state === 'LISTENING') {
+        // User interrupted or returned to listening — stop AI output
         window.speechSynthesis.cancel();
         speechQueueRef.current = [];
         isSpeakingRef.current = false;
@@ -584,7 +631,6 @@ export default function App() {
         sentenceAccumulatorRef.current = '';
         globalTextLengthRef.current = 0;
 
-        // Stop Aliyun CosyVoice playback
         isCosyVoiceActiveRef.current = false;
         if (audioSourceRef.current) {
           try {
@@ -594,10 +640,11 @@ export default function App() {
         }
         audioQueueRef.current = [];
         nextPlayIndexRef.current = 0;
+        ttsChunkCountRef.current = 0;
         isAudioPlayingRef.current = false;
         setIsAiAudioPlaying(false);
-      } else {
-        // Stop local ASR if we are thinking or speaking to avoid recording AI speech echo
+      } else if (state === 'SPEAKING') {
+        // Stop local ASR while AI is generating/speaking to avoid recording AI echo
         if (recognitionRef.current && isSpeechRecognitionActiveRef.current) {
           try {
             recognitionRef.current.abort();
@@ -606,6 +653,7 @@ export default function App() {
           }
         }
       }
+      // IDLE: LLM stream may have finished but CosyVoice audio can still be playing — do not stop playback
     });
 
     // 3. Set up camera feed
@@ -618,10 +666,7 @@ export default function App() {
       })
       .catch((err) => console.error('Error opening camera:', err));
 
-    // 4. Initialize Canvas Sync Renderer
-    if (canvasRef.current) {
-      canvasRendererRef.current = new CanvasSyncRenderer(canvasRef.current);
-    }
+    // 4. Canvas ref is reserved for visualizer rendering
 
     return () => {
       socket.disconnect();
@@ -682,14 +727,9 @@ export default function App() {
    */
   const stopAiSpeaking = useCallback(() => {
     console.log('[App] Manually stopping AI speaking...');
-    stopAiPlayback();
-
-    // 通知后端中断生成
-    socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
-
-    // 重置 FSM 状态为 LISTENING
+    performUserInterrupt();
     fsmRef.current.transitionTo('LISTENING');
-  }, [stopAiPlayback]);
+  }, [performUserInterrupt]);
 
   /**
    * 手动指令：命令 AI 记住当前画面的物品（以技能形式触发）
@@ -904,6 +944,8 @@ export default function App() {
     setSelectedGraphNode(node);
   }, []);
 
+  // [COST CONTROL: Local Browser Speech Engine (ASR) Fallback]
+  // Web Speech API performs local automatic speech recognition (ASR) to bypass cloud ASR APIs, saving operational costs.
   const initSpeechRecognition = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -970,7 +1012,7 @@ export default function App() {
       console.log('Local ASR: Stopped');
       isSpeechRecognitionActiveRef.current = false;
       
-      const isAIPaying = isSpeakingRef.current || isAudioPlayingRef.current;
+      const isAIPaying = isAiOutputActive();
       
       // Restart ASR if recording session is active, we are in LISTENING or IDLE state, and AI is not playing
       const currentState = fsmRef.current.getCurrentState();
@@ -990,6 +1032,8 @@ export default function App() {
     recognitionRef.current = recognition;
   };
 
+  // [COST CONTROL: Local Browser Speech Engine (ASR/TTS) Fallback]
+  // Direct browser speech synthesis (Web Speech API) saves cloud TTS calling cost and runs offline.
   // Handle incoming tokens from LLM and assemble sentences for TTS
   const handleIncomingToken = (token: string) => {
     if (ttsProviderRef.current === 'cosyvoice') {
@@ -1065,14 +1109,25 @@ export default function App() {
     const targetIdx = audioQueueRef.current.findIndex(item => item.index === nextPlayIndexRef.current);
     if (targetIdx === -1) {
       isAudioPlayingRef.current = false;
+      isSpeakingRef.current = false;
+      if (audioQueueRef.current.length === 0) {
+        isCosyVoiceActiveRef.current = false;
+      }
       setIsAiAudioPlaying(false);
       return;
     }
 
     isAudioPlayingRef.current = true;
+    isSpeakingRef.current = true;
     setIsAiAudioPlaying(true);
     const { index, audio } = audioQueueRef.current.splice(targetIdx, 1)[0];
     nextPlayIndexRef.current = index + 1;
+
+    if (globalTextLengthRef.current > 0 && ttsChunkCountRef.current > 0) {
+      charOffsetRef.current = Math.floor(
+        globalTextLengthRef.current * index / ttsChunkCountRef.current
+      );
+    }
 
     try {
       const decodedBuffer = await ctx.decodeAudioData(audio.slice(0));
@@ -1145,10 +1200,13 @@ export default function App() {
         onSpeechStart: () => {
           console.log("VAD: Speech started");
           
-          // Check if AI is speaking and if we should suppress the interruption trigger (potential echo)
-          const isAIPaying = isSpeakingRef.current || isAudioPlayingRef.current;
-          if (isAIPaying && speechProbabilityRef.current < interruptThresholdRef.current) {
-            console.log(`VAD start ignored (potential echo): probability ${speechProbabilityRef.current} is below ${(interruptThresholdRef.current * 100).toFixed(0)}% during AI playback`);
+          const aiActive = isAiOutputActive();
+
+          // During AI playback, ignore low-confidence VAD triggers (likely speaker echo)
+          if (aiActive && speechProbabilityRef.current < interruptThresholdRef.current) {
+            console.log(
+              `VAD start ignored (potential echo): probability ${speechProbabilityRef.current} is below ${(interruptThresholdRef.current * 100).toFixed(0)}% during AI playback`
+            );
             return;
           }
 
@@ -1173,51 +1231,9 @@ export default function App() {
           recorder.start();
 
           socketRef.current?.emit('vad_start', { speechStartedAt });
-          // If AI is playing, this is an interruption!
-          if (isSpeakingRef.current || isAudioPlayingRef.current) {
-            console.log('Interruption detected!');
-            window.speechSynthesis.cancel();
-            isSpeakingRef.current = false;
 
-            if (audioSourceRef.current) {
-              try {
-                audioSourceRef.current.stop();
-              } catch (e) {}
-              audioSourceRef.current = null;
-            }
-            audioQueueRef.current = [];
-            nextPlayIndexRef.current = 0;
-            isAudioPlayingRef.current = false;
-            setIsAiAudioPlaying(false);
-
-            socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
-
-            // Frontend timeline truncation
-            setTimeline(prev => {
-              const next = [...prev];
-              const lastMsgIndex = next.map(m => m.role).lastIndexOf('model');
-              if (lastMsgIndex !== -1) {
-                const lastMsg = next[lastMsgIndex];
-                if (charOffsetRef.current < lastMsg.text.length) {
-                  next[lastMsgIndex] = {
-                    ...lastMsg,
-                    text: lastMsg.text.substring(0, charOffsetRef.current) + "... [用户已打断]",
-                    isStreaming: false
-                  };
-                }
-              }
-              return next;
-            });
-
-             // Reset and restart local ASR for the new user speech turn
-             if (recognitionRef.current) {
-               try {
-                 recognitionRef.current.abort();
-                 recognitionRef.current.start();
-               } catch (e) {
-                 console.log('Error restarting ASR on interrupt:', e);
-               }
-             }
+          if (aiActive) {
+            performUserInterrupt();
           }
         },
         onSpeechEnd: () => {
@@ -1425,30 +1441,70 @@ export default function App() {
     if (!ctx) return;
 
     const draw = () => {
-      if (fsmRef.current.getCurrentState() === 'IDLE') return;
+      const currentState = fsmRef.current.getCurrentState();
+      
+      // If system is IDLE, clear visualizer to solid background
+      if (currentState === 'IDLE') {
+        ctx.fillStyle = '#121420';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
 
       analyser.getByteFrequencyData(dataArray);
-      ctx.fillStyle = 'rgba(10, 11, 16, 0.2)';
-      ctx.fillRect(0, 0, 80, 20); // Small visualization block
+      
+      // Create motion trail effect using translucent background
+      ctx.fillStyle = 'rgba(18, 20, 32, 0.25)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      // Create neon gradient (Cyan -> Purple -> Cyan)
+      const gradient = ctx.createLinearGradient(0, canvas.height, canvas.width, 0);
+      gradient.addColorStop(0, '#00f2fe'); // neon cyan
+      gradient.addColorStop(0.5, '#a855f7'); // neon purple
+      gradient.addColorStop(1, '#00f2fe'); // neon cyan
+
+      // Draw spectrum bars
+      const barWidth = (canvas.width / bufferLength) * 1.8;
+      let barHeight;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        const value = dataArray[i];
+        const percent = value / 255.0;
+        barHeight = percent * canvas.height * 0.75; // Max 75% height
+
+        // Draw frequency bars
+        ctx.fillStyle = gradient;
+        const y = canvas.height - barHeight;
+        ctx.fillRect(x, y, barWidth - 1, barHeight);
+
+        x += barWidth;
+      }
+
+      // Draw peak waveform overlay line
+      ctx.beginPath();
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#00f2fe';
-      ctx.beginPath();
-      
-      const sliceWidth = 80 / bufferLength;
-      let x = 0;
-      
+      ctx.shadowColor = 'rgba(0, 242, 254, 0.6)';
+      ctx.shadowBlur = 8;
+
+      x = 0;
       for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 255.0;
-        const y = 20 - v * 20;
+        const value = dataArray[i];
+        const percent = value / 255.0;
+        const y = canvas.height - (percent * canvas.height * 0.75) - 4;
+        
         if (i === 0) {
           ctx.moveTo(x, y);
         } else {
           ctx.lineTo(x, y);
         }
-        x += sliceWidth;
+        x += barWidth;
       }
       ctx.stroke();
+
+      // Reset shadow settings for performance
+      ctx.shadowBlur = 0;
+
       animationFrameRef.current = requestAnimationFrame(draw);
     };
     draw();
@@ -1936,10 +1992,10 @@ export default function App() {
           </div>
         </div>
 
-        {/* === RIGHT: Canvas & Config === */}
+        {/* === RIGHT: Audio Visualizer & Config === */}
         <div className="cyber-card">
           <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <Palette size={14} /> SCHEMATIC CANVAS
+            <Activity size={14} /> AUDIO VISUALIZER
           </h2>
 
           {/* Drawing Canvas Box */}

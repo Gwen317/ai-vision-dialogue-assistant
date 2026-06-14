@@ -109,6 +109,8 @@ export class VideoCapture {
         this.frameQueue.shift(); // remove oldest frame
       }
 
+      // [COST CONTROL: Local Image Recognition / COCO-SSD Filter]
+      // Local TensorFlow.js object detection runs on client side to filter frames and trigger RAG query only on interest, saving massive cloud API costs.
       // If QualityGuard checks pass and model is loaded, run local object detection inference
       if (brightness.passed && blur.passed && this.cocoModel) {
         try {
