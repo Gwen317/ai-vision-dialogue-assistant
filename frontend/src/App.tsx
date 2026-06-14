@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { FsmController } from '../../dialogue/vad_capture/FsmController';
 import type { AppState } from '../../dialogue/vad_capture/FsmController';
@@ -36,6 +36,39 @@ let _msgIdCounter = 0;
 function genId(prefix: string): string {
   _msgIdCounter++;
   return `${prefix}-${Date.now()}-${_msgIdCounter}`;
+}
+
+interface TimelineGroup {
+  key: string;
+  type: 'single' | 'detect';
+  messages: TimelineMessage[];
+}
+
+function isDetectMsg(text: string): boolean {
+  return text.startsWith('[🔍');
+}
+
+function groupTimeline(messages: TimelineMessage[]): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    if (isDetectMsg(messages[i].text)) {
+      const batch: TimelineMessage[] = [];
+      while (i < messages.length && isDetectMsg(messages[i].text)) {
+        batch.push(messages[i]);
+        i++;
+      }
+      groups.push({
+        key: batch[0].id,
+        type: batch.length > 1 ? 'detect' : 'single',
+        messages: batch,
+      });
+    } else {
+      groups.push({ key: messages[i].id, type: 'single', messages: [messages[i]] });
+      i++;
+    }
+  }
+  return groups;
 }
 
 function parseTimelineText(text: string) {
@@ -112,6 +145,7 @@ export default function App() {
   const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(true);
   const graphNodeSetRef = useRef<Set<string>>(new Set());
+  const [expandedDetectGroups, setExpandedDetectGroups] = useState<Set<string>>(new Set());
 
   // ─── Live2D 状态 ───
   const [live2dModelUrl, setLive2dModelUrl] = useState<string>(
@@ -456,6 +490,17 @@ export default function App() {
       timelineContainerRef.current.scrollTop = timelineContainerRef.current.scrollHeight;
     }
   }, [timeline]);
+
+  const groupedTimeline = useMemo(() => groupTimeline(timeline), [timeline]);
+
+  const toggleDetectGroup = useCallback((key: string) => {
+    setExpandedDetectGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const clearLogs = () => {
     setTimeline([]);
@@ -1628,23 +1673,61 @@ export default function App() {
                 {appState === 'THINKING' ? 'AI 正在思考中，请稍候...' : '等待您的提问，直接对着麦克风说话即可开始录音...'}
               </div>
             ) : (
-              timeline.map((msg) => (
-                <div key={msg.id} className="timeline-item">
-                  <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
-                  <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
-                    <div className="timeline-meta">
-                      <span className={`timeline-role-${msg.role}`}>
-                        {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
-                      </span>
-                      <span className="timeline-time">{msg.timestamp}</span>
+              groupedTimeline.map((group) => {
+                if (group.type === 'single') {
+                  const msg = group.messages[0];
+                  return (
+                    <div key={group.key} className="timeline-item">
+                      <div className={`timeline-node timeline-node-${msg.role} ${msg.isStreaming ? 'timeline-node-active' : ''}`}></div>
+                      <div className={`timeline-bubble timeline-bubble-${msg.role}`}>
+                        <div className="timeline-meta">
+                          <span className={`timeline-role-${msg.role}`}>
+                            {msg.role === 'user' ? 'USER' : 'ASSISTANT'}
+                          </span>
+                          <span className="timeline-time">{msg.timestamp}</span>
+                        </div>
+                        <div className="timeline-text">
+                          {parseTimelineText(msg.text)}
+                          {msg.isStreaming && <span className="typing-cursor"></span>}
+                        </div>
+                      </div>
                     </div>
-                    <div className="timeline-text">
-                      {parseTimelineText(msg.text)}
-                      {msg.isStreaming && <span className="typing-cursor"></span>}
+                  );
+                }
+
+                const isExpanded = expandedDetectGroups.has(group.key);
+                const latest = group.messages[group.messages.length - 1];
+                return (
+                  <div key={group.key} className="timeline-item">
+                    <div className="timeline-node timeline-node-user"></div>
+                    <div className="timeline-bubble timeline-bubble-user">
+                      <div
+                        className="detect-group-header"
+                        onClick={() => toggleDetectGroup(group.key)}
+                      >
+                        <ScanLine size={13} />
+                        <span style={{ fontWeight: 600 }}>
+                          智能分析与建链 · {group.messages.length} 条
+                        </span>
+                        <span className="detect-group-time">{latest.timestamp}</span>
+                        <span className="detect-group-toggle">
+                          {isExpanded ? '收起 ▲' : '展开 ▼'}
+                        </span>
+                      </div>
+                      {isExpanded && (
+                        <div className="detect-group-list">
+                          {group.messages.map(msg => (
+                            <div key={msg.id} className="detect-group-item">
+                              <span className="detect-group-item-time">{msg.timestamp}</span>
+                              {parseTimelineText(msg.text)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
             <div ref={timelineEndRef} />
           </div>
