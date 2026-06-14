@@ -273,30 +273,41 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
       };
     });
 
-    const validLinks = links.filter(l => {
-      const { sourceId, targetId } = getLinkEndpoints(l);
-      return sourceId !== targetId && nodeIdSet.has(sourceId) && nodeIdSet.has(targetId);
-    });
+    type SimLink = GraphLink & { _labelIndex?: number; _labelTotal?: number };
+
+    // 深拷贝边并用字符串 ID，避免 forceLink 污染 React state 后下次渲染指向失效节点
+    const simLinks: SimLink[] = links
+      .map(l => {
+        const { sourceId, targetId } = getLinkEndpoints(l);
+        return { source: sourceId, target: targetId, relation: l.relation } as SimLink;
+      })
+      .filter(l => {
+        const sourceId = l.source as string;
+        const targetId = l.target as string;
+        return sourceId !== targetId && nodeIdSet.has(sourceId) && nodeIdSet.has(targetId);
+      });
 
     // 为平行边分配标签偏移索引，减轻「同场景」等标签堆叠
     const parallelLinkIndex = new Map<string, number>();
     const parallelLinkTotal = new Map<string, number>();
-    for (const link of validLinks) {
-      const { sourceId, targetId } = getLinkEndpoints(link);
+    for (const link of simLinks) {
+      const sourceId = link.source as string;
+      const targetId = link.target as string;
       const key = [sourceId, targetId].sort().join('->');
       parallelLinkTotal.set(key, (parallelLinkTotal.get(key) || 0) + 1);
     }
-    for (const link of validLinks) {
-      const { sourceId, targetId } = getLinkEndpoints(link);
+    for (const link of simLinks) {
+      const sourceId = link.source as string;
+      const targetId = link.target as string;
       const key = [sourceId, targetId].sort().join('->');
       const index = parallelLinkIndex.get(key) || 0;
       parallelLinkIndex.set(key, index + 1);
-      (link as GraphLink & { _labelIndex?: number; _labelTotal?: number })._labelIndex = index;
-      (link as GraphLink & { _labelIndex?: number; _labelTotal?: number })._labelTotal = parallelLinkTotal.get(key) || 1;
+      link._labelIndex = index;
+      link._labelTotal = parallelLinkTotal.get(key) || 1;
     }
 
     const simulation = d3.forceSimulation<GraphNode>(simNodes)
-      .force('link', d3.forceLink<GraphNode, GraphLink>(validLinks).id(d => d.id).distance(90).strength(0.6))
+      .force('link', d3.forceLink<GraphNode, SimLink>(simLinks).id(d => d.id).distance(90).strength(0.6))
       .force('charge', d3.forceManyBody().strength(-320).distanceMax(280))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide<GraphNode>().radius(d => Math.max(36, (d.label?.length || 0) * 2.5)))
@@ -313,7 +324,7 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     // ─── 连线 ───
     const link = root.append('g')
       .selectAll('line')
-      .data(validLinks)
+      .data(simLinks)
       .enter().append('line')
       .attr('stroke', 'rgba(0, 242, 254, 0.15)')
       .attr('stroke-width', 1.5)
@@ -322,7 +333,7 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     // 连线标签
     const linkText = root.append('g')
       .selectAll('text')
-      .data(validLinks)
+      .data(simLinks)
       .enter().append('text')
       .style('fill', '#5a6a7e')
       .style('font-size', '9px')
@@ -454,8 +465,7 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
         const length = Math.hypot(dx, dy) || 1;
         const nx = -dy / length;
         const ny = dx / length;
-        const labelMeta = d as GraphLink & { _labelIndex?: number; _labelTotal?: number };
-        const offset = getLinkLabelOffset(labelMeta._labelIndex || 0, labelMeta._labelTotal || 1);
+        const offset = getLinkLabelOffset(d._labelIndex || 0, d._labelTotal || 1);
 
         d3.select(this)
           .attr('opacity', 1)

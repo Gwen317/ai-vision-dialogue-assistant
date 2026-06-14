@@ -49,7 +49,8 @@ const { messages } = buildTimelineMessages({
   turnTiming: {
     speechStartedAt: userSpeechAt32s,
     speechEndedAt: userSpeechEndAt34s
-  }
+  },
+  includeImage: true
 });
 
 const orderedTexts = messages.map(messageText);

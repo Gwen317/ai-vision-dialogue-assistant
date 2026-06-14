@@ -113,12 +113,41 @@ async function transcribeWithMolifangzhou(audioBuffer: Buffer, mimeType: string)
   }
 }
 
+/** Whether this turn should attach camera frames and vision-oriented prompt context. */
+export function needsVisionInput(userSpeech: string): boolean {
+  const text = userSpeech.trim();
+  if (!text) return false;
+
+  const nonVisionPatterns = [
+    /作文|小作文|写一[篇段句个]?|帮我写|给我写/,
+    /故事|小故事|讲一[个篇段]?|给我讲|说一[个篇段]?|编一[个篇段]?/,
+    /笑话|诗词|诗歌|猜谜|顺口溜/,
+    /翻译|计算|算术|几点了|今天星期/,
+    /^(你好|嗨|哈喽|谢谢|再见|嗯|啊|哦)[\?？!！。…]*$/
+  ];
+  if (nonVisionPatterns.some(p => p.test(text))) return false;
+
+  const visionPatterns = [
+    /看(看|一下|到|见)|画面|镜头|视频|摄像头|相机/,
+    /这是什么|那是什么|什么东西|识别|辨认|检测/,
+    /描述|穿搭|长相|颜色|形状|大小/,
+    /展示|拿着|举着|手里|桌上|面前|镜头前/,
+    /记住|录入|图谱|记忆|分析.*(画面|镜头|物体|物品)/,
+    /对比|上次|之前|还记得|以前|刚才.*(看|展示)/,
+    /帮我看|你看看|看一下|能看见|看到/
+  ];
+  if (visionPatterns.some(p => p.test(text))) return true;
+
+  return false;
+}
+
 export function buildTimelineMessages({
   systemInstruction,
   userSpeech,
   timeline,
-  turnTiming
-}: BuildTimelineMessagesInput): {
+  turnTiming,
+  includeImage = true
+}: BuildTimelineMessagesInput & { includeImage?: boolean }): {
   messages: ChatMessages[];
   currentParts: OpenRouterContentPart[];
 } {
@@ -135,7 +164,7 @@ export function buildTimelineMessages({
     .sort((a, b) => a.timestamp - b.timestamp);
 
   const latestImage = imageEvents.at(-1) as Extract<TimelineEvent, { type: 'image' }> | undefined;
-  if (latestImage) {
+  if (latestImage && includeImage) {
     currentParts.push({
       type: 'image_url',
       imageUrl: {
@@ -357,19 +386,32 @@ export class ModelRouter {
     const objects = [...new Set((visualContext ?? []).map(v => v.trim()).filter(Boolean))];
     if (objects.length === 0) return '';
     const descriptions = objects.map(o => this.describeDetectedEntity(o));
-    return `\n[CURRENT CAMERA DETECTION — BACKGROUND ONLY] ${descriptions.join('; ')}\nThis is silent visual context from object detection — NOT the user's spoken request. Describe people as appearing in the frame, never as something the user is "holding". Only mention detections when relevant to the user's question.`;
+    return `\n[CURRENT CAMERA DETECTION — BACKGROUND ONLY] ${descriptions.join('; ')}\nSilent object-detection context — NOT the user's request. Do NOT mention these detections unless the user asks about the video/scene. Never describe people as something the user is "holding".`;
   }
 
-  private static getBaseSystemInstruction(visualContext?: string[]): string {
-    return 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
-      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
-      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
-      '2. Describe what you see accurately by entity type:\n' +
-      '   - People (person): they appear IN the video frame — e.g. "画面里有一位…", "我看到视频中有…". NEVER say the user is "holding" or "拿着" a person.\n' +
-      '   - Objects the user presents to camera: they may be holding or showing them — e.g. "你在镜头前展示的是…", "我看到你手里拿着…".\n' +
-      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过…", "你刚才在视频里给我看过的…").\n\n' +
+  private static getBaseSystemInstruction(visualContext?: string[], visionTurn = true): string {
+    const priorityRules =
+      'RESPONSE PRIORITY (critical — follow strictly):\n' +
+      '1. The user\'s spoken request is ALWAYS the primary task. Answer it directly first.\n' +
+      '2. Do NOT open with camera/scene descriptions ("画面里…", "我看到…", "背景是…") unless the user explicitly asks about the video, scene, objects, or their appearance.\n' +
+      '3. For creative or conversational requests (写作文, 讲故事, 笑话, 聊天, 问答, 指令), respond ONLY to that request — zero visual preamble.\n' +
+      '4. Camera frames and detection tags (when present) are silent background context — use them only when directly relevant to what the user asked.\n\n';
+
+    const visionGuidelines = visionTurn
+      ? 'WHEN (and only when) the user asks about the video/scene/objects:\n' +
+        '- This is a live video call — never say "自拍", "上传的照片", or "截图".\n' +
+        '- People appear IN the frame — e.g. "画面里有一位…". NEVER say the user is "holding" or "拿着" a person.\n' +
+        '- Objects shown to camera — e.g. "你在镜头前展示的是…", "我看到你手里拿着…".\n' +
+        '- When referring to recalled memories with images, use previous video call sessions (e.g. "我们上次视频通话见过…").\n\n'
+      : 'This turn has NO camera frame attached. Respond as a voice assistant only — do not invent or describe visual details.\n\n';
+
+    return (
+      'You are a helpful AI assistant in a real-time live video and audio call. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
+      priorityRules +
+      visionGuidelines +
       'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.' +
-      this.buildVisualContextPrompt(visualContext);
+      (visionTurn ? this.buildVisualContextPrompt(visualContext) : '')
+    );
   }
 
   private static buildRecalledMemoryPrompt(recalledMemory: { timestamp: Date; description: string; transcript: string; entityTags?: string[] }): string {
@@ -577,7 +619,12 @@ export class ModelRouter {
     }
 
     // 3. Construct System Instruction / Prompt with memory context
-    let systemInstruction = this.getBaseSystemInstruction(visualContext);
+    const visionTurn = needsVisionInput(userSpeech);
+    console.log(`Vision turn: ${visionTurn} for speech: "${userSpeech}"`);
+    let systemInstruction = this.getBaseSystemInstruction(
+      visionTurn ? visualContext : undefined,
+      visionTurn
+    );
     
     if (recalledMemory) {
       systemInstruction += this.buildRecalledMemoryPrompt(recalledMemory);
@@ -588,7 +635,8 @@ export class ModelRouter {
       systemInstruction,
       userSpeech,
       timeline,
-      turnTiming
+      turnTiming,
+      includeImage: visionTurn
     });
 
     // Guard: abort before writing to timeline
@@ -755,7 +803,12 @@ export class ModelRouter {
       return;
     }
 
-    let systemInstruction = this.getBaseSystemInstruction(visualContext);
+    const visionTurn = needsVisionInput(userSpeech);
+    console.log(`Vision turn (text): ${visionTurn} for speech: "${userSpeech}"`);
+    let systemInstruction = this.getBaseSystemInstruction(
+      visionTurn ? visualContext : undefined,
+      visionTurn
+    );
     if (recalledMemory) {
       systemInstruction += this.buildRecalledMemoryPrompt(recalledMemory);
     }
@@ -764,7 +817,8 @@ export class ModelRouter {
       systemInstruction,
       userSpeech,
       timeline,
-      turnTiming
+      turnTiming,
+      includeImage: visionTurn
     });
 
     if (signal.aborted) {
