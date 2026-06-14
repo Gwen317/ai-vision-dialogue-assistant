@@ -1637,20 +1637,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* === CENTER: Live2D Character & Dialogue Timeline === */}
+        {/* === CENTER: Dialogue Timeline === */}
         <div className="cyber-card">
-          {/* Live2D Character Panel */}
-          <Live2DView
-            key={live2dKey}
-            aiText={aiResponse}
-            appState={appState}
-            modelUrl={live2dModelUrl || undefined}
-            onModelChange={(url) => {
-              setLive2dModelUrl(url);
-              setLive2dKey((k) => k + 1);
-            }}
-          />
-
           {/* Timeline Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0 }}>
             <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -1933,6 +1921,18 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Live2D Character Panel */}
+          <Live2DView
+            key={live2dKey}
+            aiText={aiResponse}
+            appState={appState}
+            modelUrl={live2dModelUrl || undefined}
+            onModelChange={(url) => {
+              setLive2dModelUrl(url);
+              setLive2dKey((k) => k + 1);
+            }}
+          />
         </div>
       </div>
 

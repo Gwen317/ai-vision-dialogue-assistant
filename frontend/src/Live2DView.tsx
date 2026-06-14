@@ -33,20 +33,6 @@ function cleanBubbleText(text: string): string {
   return text.replace(/^\[.*?\]\s*/s, '').trim();
 }
 
-function useDelayedFalse(value: boolean, delayMs: number): boolean {
-  const [delayed, setDelayed] = useState(value);
-  useEffect(() => {
-    if (value) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setDelayed(true);
-      return;
-    }
-    const timer = setTimeout(() => setDelayed(false), delayMs);
-    return () => clearTimeout(timer);
-  }, [value, delayMs]);
-  return delayed;
-}
-
 export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2DViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
@@ -59,8 +45,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
 
   const [modelLoaded, setModelLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [loadLog, setLoadLog] = useState<string>('');
-  const bubbleVisibleDelayed = useDelayedFalse(isSpeaking, 2500);
+  const [loadLog, setLoadLog] = useState('');
   const motionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Custom URL input state
@@ -72,9 +57,10 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
 
   const resolvedModelUrl = storedUrl || LIVE2D_MODELS[0].url;
 
-  // Derived bubble text
+  // Bubble stays visible through SPEAKING → LISTENING → IDLE,
+  // only clears when THINKING starts (new interaction, aiText reset to '')
   const bubbleText = useMemo(() => {
-    if (aiText && (appState === 'SPEAKING' || appState === 'THINKING')) {
+    if (aiText && appState !== 'THINKING') {
       return cleanBubbleText(aiText);
     }
     return '';
@@ -456,7 +442,7 @@ export function Live2DView({ aiText, appState, modelUrl, onModelChange }: Live2D
         )}
 
         {/* Speech Bubble */}
-        {bubbleVisibleDelayed && bubbleText && (
+        {bubbleText && (
           <div className="live2d-speech-bubble visible">
             <div className="live2d-bubble-content">{bubbleText}</div>
             <div className="live2d-bubble-tail"></div>
