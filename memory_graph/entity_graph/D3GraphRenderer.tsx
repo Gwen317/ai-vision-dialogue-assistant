@@ -171,6 +171,20 @@ const TooltipCard: React.FC<{ data: TooltipData | null; onClose: () => void }> =
 //  主渲染组件
 // ─────────────────────────────────────────────
 
+function getLinkEndpoints(link: GraphLink): { sourceId: string; targetId: string } {
+  return {
+    sourceId: typeof link.source === 'string' ? link.source : link.source.id,
+    targetId: typeof link.target === 'string' ? link.target : link.target.id
+  };
+}
+
+function getLinkLabelOffset(index: number, total: number): number {
+  if (total <= 1) return 0;
+  const step = 12;
+  const center = (total - 1) / 2;
+  return (index - center) * step;
+}
+
 export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, onNodeClick }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -180,9 +194,15 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
 
   useEffect(() => {
     if (!svgRef.current) return;
+    if (nodes.length === 0) {
+      d3.select(svgRef.current).selectAll('*').remove();
+      return;
+    }
+    if (!containerRef.current) return;
 
-    const width = 600;
-    const height = 400;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const width = Math.max(containerRect.width || 600, 400);
+    const height = Math.max(containerRect.height || 400, 400);
 
     // Clear previous elements
     d3.select(svgRef.current).selectAll('*').remove();
@@ -192,6 +212,8 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
       .attr('height', '100%')
       .attr('viewBox', `0 0 ${width} ${height}`)
       .style('background', '#0b0f19');
+
+    const root = svg.append('g').attr('class', 'graph-root');
 
     // ─── Defs: 箭头 + 呼吸光晕滤镜 ───
     const defs = svg.append('defs');
@@ -237,22 +259,59 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     });
 
     // ─── 力学仿真 ───
-    // 过滤掉引用了不存在节点的链接，防止 d3.forceLink 崩溃
+    // 深拷贝节点，避免 D3 仿真污染 React state 中的坐标（会导致节点漂移/重复渲染）
     const nodeIdSet = new Set(nodes.map(n => n.id));
-    const validLinks = links.filter(l => {
-      const s = typeof l.source === 'string' ? l.source : l.source.id;
-      const t = typeof l.target === 'string' ? l.target : l.target.id;
-      return nodeIdSet.has(s) && nodeIdSet.has(t);
+    const simNodes: GraphNode[] = nodes.map((n, i) => {
+      const angle = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
+      const radius = Math.min(width, height) * 0.18;
+      return {
+        ...n,
+        x: width / 2 + Math.cos(angle) * radius,
+        y: height / 2 + Math.sin(angle) * radius,
+        fx: undefined,
+        fy: undefined
+      };
     });
 
-    const simulation = d3.forceSimulation<GraphNode>(nodes)
-      .force('link', d3.forceLink<GraphNode, GraphLink>(validLinks).id(d => d.id).distance(100))
-      .force('charge', d3.forceManyBody().strength(-180))
+    const validLinks = links.filter(l => {
+      const { sourceId, targetId } = getLinkEndpoints(l);
+      return sourceId !== targetId && nodeIdSet.has(sourceId) && nodeIdSet.has(targetId);
+    });
+
+    // 为平行边分配标签偏移索引，减轻「同场景」等标签堆叠
+    const parallelLinkIndex = new Map<string, number>();
+    const parallelLinkTotal = new Map<string, number>();
+    for (const link of validLinks) {
+      const { sourceId, targetId } = getLinkEndpoints(link);
+      const key = [sourceId, targetId].sort().join('->');
+      parallelLinkTotal.set(key, (parallelLinkTotal.get(key) || 0) + 1);
+    }
+    for (const link of validLinks) {
+      const { sourceId, targetId } = getLinkEndpoints(link);
+      const key = [sourceId, targetId].sort().join('->');
+      const index = parallelLinkIndex.get(key) || 0;
+      parallelLinkIndex.set(key, index + 1);
+      (link as GraphLink & { _labelIndex?: number; _labelTotal?: number })._labelIndex = index;
+      (link as GraphLink & { _labelIndex?: number; _labelTotal?: number })._labelTotal = parallelLinkTotal.get(key) || 1;
+    }
+
+    const simulation = d3.forceSimulation<GraphNode>(simNodes)
+      .force('link', d3.forceLink<GraphNode, GraphLink>(validLinks).id(d => d.id).distance(90).strength(0.6))
+      .force('charge', d3.forceManyBody().strength(-320).distanceMax(280))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(30));
+      .force('collision', d3.forceCollide<GraphNode>().radius(d => Math.max(36, (d.label?.length || 0) * 2.5)))
+      .alphaDecay(0.04)
+      .velocityDecay(0.35);
+
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.35, 3])
+      .on('zoom', (event) => {
+        root.attr('transform', event.transform);
+      });
+    svg.call(zoom as any);
 
     // ─── 连线 ───
-    const link = svg.append('g')
+    const link = root.append('g')
       .selectAll('line')
       .data(validLinks)
       .enter().append('line')
@@ -261,33 +320,28 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
       .attr('marker-end', 'url(#arrow)');
 
     // 连线标签
-    const linkText = svg.append('g')
+    const linkText = root.append('g')
       .selectAll('text')
       .data(validLinks)
       .enter().append('text')
       .style('fill', '#5a6a7e')
       .style('font-size', '9px')
-      .style('font-family', "'Inter', sans-serif")
+      .style('font-family', "'Inter', 'Noto Sans SC', sans-serif")
       .style('pointer-events', 'none')
+      .style('paint-order', 'stroke')
+      .style('stroke', '#0b0f19')
+      .style('stroke-width', '3px')
+      .style('stroke-linejoin', 'round')
       .text(d => d.relation);
 
     // ─── 节点组 ───
-    const node = svg.append('g')
+    const node = root.append('g')
       .selectAll('g')
-      .data(nodes)
+      .data(simNodes)
       .enter().append('g')
       .style('cursor', 'pointer')
       .on('click', (event, d) => {
-        // 弹出悬浮卡片
-        const svgRect = svgRef.current!.getBoundingClientRect();
-        const containerRect = containerRef.current?.getBoundingClientRect();
-        const offsetX = containerRect ? containerRect.left : svgRect.left;
-        const offsetY = containerRect ? containerRect.top : svgRect.top;
-        
-        const screenX = (d.x! / width) * svgRect.width + offsetX;
-        const screenY = (d.y! / height) * svgRect.height + offsetY;
-        
-        setTooltip({ node: d, x: screenX, y: screenY });
+        setTooltip({ node: d, x: event.clientX, y: event.clientY });
         onNodeClick?.(d);
       })
       .call(d3.drag<SVGGElement, GraphNode>()
@@ -349,21 +403,70 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
         .attr('stroke-opacity', 0.2 + Math.sin(t * 1.8) * 0.15);
     });
 
+    const fitGraphToView = () => {
+      const bbox = (root.node() as SVGGElement | null)?.getBBox();
+      if (!bbox || bbox.width === 0 || bbox.height === 0) return;
+
+      const padding = 48;
+      const scale = Math.min(
+        (width - padding * 2) / bbox.width,
+        (height - padding * 2) / bbox.height,
+        1.4
+      );
+      const tx = width / 2 - scale * (bbox.x + bbox.width / 2);
+      const ty = height / 2 - scale * (bbox.y + bbox.height / 2);
+      const transform = d3.zoomIdentity.translate(tx, ty).scale(scale);
+      svg.transition().duration(450).call(zoom.transform as any, transform);
+    };
+
     // ─── Tick 更新 ───
     simulation.on('tick', () => {
-      link
-        .attr('x1', d => (d.source as GraphNode).x!)
-        .attr('y1', d => (d.source as GraphNode).y!)
-        .attr('x2', d => (d.target as GraphNode).x!)
-        .attr('y2', d => (d.target as GraphNode).y!);
+      link.each(function (d) {
+        const source = d.source as GraphNode;
+        const target = d.target as GraphNode;
+        if (source.x == null || source.y == null || target.x == null || target.y == null) {
+          d3.select(this).attr('opacity', 0);
+          return;
+        }
+        d3.select(this)
+          .attr('opacity', 1)
+          .attr('x1', source.x)
+          .attr('y1', source.y)
+          .attr('x2', target.x)
+          .attr('y2', target.y);
+      });
 
       node
-        .attr('transform', d => `translate(${d.x}, ${d.y})`);
+        .attr('transform', d => (d.x == null || d.y == null ? 'translate(0,0)' : `translate(${d.x}, ${d.y})`));
 
-      linkText
-        .attr('x', d => ((d.source as GraphNode).x! + (d.target as GraphNode).x!) / 2)
-        .attr('y', d => ((d.source as GraphNode).y! + (d.target as GraphNode).y!) / 2);
+      linkText.each(function (d) {
+        const source = d.source as GraphNode;
+        const target = d.target as GraphNode;
+        if (source.x == null || source.y == null || target.x == null || target.y == null) {
+          d3.select(this).attr('opacity', 0);
+          return;
+        }
+
+        const midX = (source.x + target.x) / 2;
+        const midY = (source.y + target.y) / 2;
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const length = Math.hypot(dx, dy) || 1;
+        const nx = -dy / length;
+        const ny = dx / length;
+        const labelMeta = d as GraphLink & { _labelIndex?: number; _labelTotal?: number };
+        const offset = getLinkLabelOffset(labelMeta._labelIndex || 0, labelMeta._labelTotal || 1);
+
+        d3.select(this)
+          .attr('opacity', 1)
+          .attr('x', midX + nx * offset)
+          .attr('y', midY + ny * offset)
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'middle');
+      });
     });
+
+    simulation.on('end', fitGraphToView);
 
     // ─── 拖拽回调 ───
     function dragstarted(event: any, d: GraphNode) {
@@ -374,8 +477,9 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
     }
 
     function dragged(event: any, d: GraphNode) {
-      d.fx = event.x;
-      d.fy = event.y;
+      const transform = d3.zoomTransform(svg.node() as SVGSVGElement);
+      d.fx = transform.invertX(event.x);
+      d.fy = transform.invertY(event.y);
     }
 
     function dragended(event: any, d: GraphNode) {

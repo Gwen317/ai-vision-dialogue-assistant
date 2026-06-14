@@ -97,6 +97,54 @@ function splitTimeline(messages: TimelineMessage[]): {
   return { conversation, detectLog };
 }
 
+function resolveGraphNodeId(
+  className: string,
+  analysis: { refinedLabel: string; type: string }
+): string {
+  if (analysis.type === 'person') {
+    const label = analysis.refinedLabel.toLowerCase();
+    if (label.includes('gwen')) return 'gwen';
+    if (label.includes('friend') || label.includes('朋友')) return 'friend';
+    const slug = analysis.refinedLabel
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^\w\u4e00-\u9fff]/g, '');
+    return slug || 'person';
+  }
+  return className.toLowerCase().replace(/\s+/g, '_');
+}
+
+function normalizeGraphLinks(links: GraphLink[], nodeIds: Set<string>): GraphLink[] {
+  const seen = new Set<string>();
+  const normalized: GraphLink[] = [];
+
+  for (const link of links) {
+    const source = typeof link.source === 'string' ? link.source : link.source.id;
+    const target = typeof link.target === 'string' ? link.target : link.target.id;
+    if (!nodeIds.has(source) || !nodeIds.has(target) || source === target) continue;
+
+    const dedupeKey = [source, target].sort().join('->') + `|${link.relation}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    normalized.push({ source, target, relation: link.relation });
+  }
+
+  return normalized;
+}
+
+function remapGraphLinks(links: GraphLink[], idRemap: Map<string, string>): GraphLink[] {
+  return links.map(link => {
+    const source = typeof link.source === 'string' ? link.source : link.source.id;
+    const target = typeof link.target === 'string' ? link.target : link.target.id;
+    return {
+      source: idRemap.get(source) || source,
+      target: idRemap.get(target) || target,
+      relation: link.relation
+    };
+  });
+}
+
 function parseTimelineText(text: string) {
   const match = text.match(/^\[(.*?)\]\s*(.*)$/s);
   if (match) {
@@ -466,17 +514,39 @@ export default function App() {
     // Handle graph rebuild result from backend
     socket.on('graph_rebuild_result', (data: { nodes: any[]; links: any[] }) => {
       console.log('[App] Received graph rebuild result:', data);
-      const mappedNodes: GraphNode[] = (data.nodes || []).map((n: any) => ({
-        id: n.id,
-        label: n.label || n.refinedLabel || n.id,
-        type: n.type || 'concept',
-        image: n.image || undefined,
-        details: n.details || undefined,
-        firstSeen: n.firstSeen || new Date().toISOString()
-      }));
+      const nodeMap = new Map<string, GraphNode>();
+      const idRemap = new Map<string, string>();
+
+      for (const n of data.nodes || []) {
+        let id = String(n.id || '').toLowerCase().replace(/\s+/g, '_');
+        const label = n.label || n.refinedLabel || n.id || id;
+
+        // 合并 person 与 gwen 等重复人物节点
+        if (id === 'person' || (n.type === 'person' && String(label).toLowerCase().includes('gwen'))) {
+          idRemap.set(id, 'gwen');
+          id = 'gwen';
+        }
+
+        if (!nodeMap.has(id)) {
+          nodeMap.set(id, {
+            id,
+            label,
+            type: n.type || 'concept',
+            image: n.image || undefined,
+            details: n.details || undefined,
+            firstSeen: n.firstSeen || new Date().toISOString()
+          });
+        }
+      }
+
+      const mappedNodes = Array.from(nodeMap.values());
+      const nodeIds = new Set(mappedNodes.map(n => n.id));
+      const remappedLinks = remapGraphLinks(data.links || [], idRemap);
+      const normalizedLinks = normalizeGraphLinks(remappedLinks, nodeIds);
+
       setGraphNodes(mappedNodes);
-      setGraphLinks(data.links || []);
-      graphNodeSetRef.current = new Set(mappedNodes.map(n => n.id));
+      setGraphLinks(normalizedLinks);
+      graphNodeSetRef.current = nodeIds;
     });
 
     // 2. FSM state change listener
@@ -716,7 +786,7 @@ export default function App() {
     },
     imageBase64?: string
   ) => {
-    const nodeId = className.toLowerCase().replace(/\s+/g, '_');
+    const nodeId = resolveGraphNodeId(className, analysis);
 
     if (graphNodeSetRef.current.has(nodeId)) {
       // 若已存在，更新为 AI 细化分析的数据
@@ -738,20 +808,22 @@ export default function App() {
         setGraphLinks(prevLinks => {
           const updatedLinks = [...prevLinks];
           for (const rel of analysis.relations) {
+            const targetId = rel.target.toLowerCase().replace(/\s+/g, '_');
+            if (!graphNodeSetRef.current.has(targetId)) continue;
             const linkExists = updatedLinks.some(l => {
               const s = typeof l.source === 'string' ? l.source : l.source.id;
               const t = typeof l.target === 'string' ? l.target : l.target.id;
-              return (s === nodeId && t === rel.target) || (s === rel.target && t === nodeId);
+              return (s === nodeId && t === targetId) || (s === targetId && t === nodeId);
             });
             if (!linkExists) {
               updatedLinks.push({
                 source: nodeId,
-                target: rel.target,
+                target: targetId,
                 relation: rel.relation
               });
             }
           }
-          return updatedLinks;
+          return normalizeGraphLinks(updatedLinks, graphNodeSetRef.current);
         });
       }
       return;
@@ -774,17 +846,20 @@ export default function App() {
 
       if (analysis.relations && analysis.relations.length > 0) {
         for (const rel of analysis.relations) {
+          const targetId = rel.target.toLowerCase().replace(/\s+/g, '_');
+          if (!graphNodeSetRef.current.has(targetId) || targetId === nodeId) continue;
           newLinks.push({
             source: nodeId,
-            target: rel.target,
+            target: targetId,
             relation: rel.relation
           });
         }
-      } else {
-        // AI 未返回特定关系时，降级与全部已有节点建立“同场景”关联
-        for (const existing of prev) {
+      } else if (prev.length > 0) {
+        // 无 AI 关系时，仅与最近加入的节点建立同场景关联，避免全连接导致标签堆叠
+        const latestNode = prev[prev.length - 1];
+        if (latestNode.id !== nodeId) {
           newLinks.push({
-            source: existing.id,
+            source: latestNode.id,
             target: nodeId,
             relation: '同场景'
           });
@@ -792,7 +867,7 @@ export default function App() {
       }
 
       if (newLinks.length > 0) {
-        setGraphLinks(prevLinks => [...prevLinks, ...newLinks]);
+        setGraphLinks(prevLinks => normalizeGraphLinks([...prevLinks, ...newLinks], graphNodeSetRef.current));
       }
 
       return updated;
