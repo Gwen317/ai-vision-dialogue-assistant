@@ -423,33 +423,53 @@ export class ModelRouter {
       } else if (this.speechTranscriber) {
         userSpeech = await this.speechTranscriber(audioBuffer);
       } else if (hasDashscope) {
-        console.log('Using Aliyun DashScope (qwen3-asr-flash) for transcription...');
+        console.log('Using Aliyun DashScope (qwen3-asr-flash) for transcription (with MP3 transcoding)...');
         const client = new OpenAI({
           apiKey: dashscopeKey,
           baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
         });
 
-        const base64Data = audioBuffer.toString('base64');
-        const mime = audioMimeType.split(';')[0];
-        const dataUri = `data:${mime};base64,${base64Data}`;
+        const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'dashscope-asr-'));
+        const inputAudioPath = path.join(tmpDir, `speech-input.${extensionForAudioMimeType(audioMimeType)}`);
+        const mp3AudioPath = path.join(tmpDir, 'speech.mp3');
 
-        const response = await client.chat.completions.create({
-          model: 'qwen3-asr-flash',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'input_audio',
-                  input_audio: {
-                    data: dataUri
-                  }
-                } as any
-              ]
-            }
-          ]
-        });
-        userSpeech = (response.choices[0]?.message?.content || '').trim();
+        try {
+          // Write buffer to temp file and convert to MP3 (16kHz, mono)
+          await fs.promises.writeFile(inputAudioPath, audioBuffer);
+          await convertAudioToMp3(inputAudioPath, mp3AudioPath);
+
+          const mp3Buffer = await fs.promises.readFile(mp3AudioPath);
+          const base64Data = mp3Buffer.toString('base64');
+          const dataUri = `data:audio/mp3;base64,${base64Data}`;
+
+          const response = await client.chat.completions.create({
+            model: 'qwen3-asr-flash',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'input_audio',
+                    input_audio: {
+                      data: dataUri
+                    }
+                  } as any
+                ]
+              }
+            ]
+          });
+          userSpeech = (response.choices[0]?.message?.content || '').trim();
+        } catch (asrErr) {
+          console.error('[ModelRouter] DashScope ASR call failed, falling back to empty text:', asrErr);
+          userSpeech = '';
+        } finally {
+          // Clean up temp folder
+          try {
+            await fs.promises.rm(tmpDir, { recursive: true, force: true });
+          } catch (cleanupErr) {
+            console.error('[ModelRouter] Failed to cleanup DashScope ASR temp dir:', cleanupErr);
+          }
+        }
       } else if (hasMolifangzhou) {
         userSpeech = await transcribeWithMolifangzhou(audioBuffer, audioMimeType);
       } else if (localText) {
