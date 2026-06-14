@@ -245,7 +245,14 @@ function prepareMessagesForModel(messages: any[], modelName: string): any[] {
 export class ModelRouter {
   private static openrouter: any = null;
   private static speechTranscriber: ((audioBuffer: Buffer) => Promise<string>) | null = null;
-  private static ttsClient = new CosyVoiceTtsClient();
+  private static ttsClientInstance: CosyVoiceTtsClient | null = null;
+
+  private static get ttsClient(): CosyVoiceTtsClient {
+    if (!this.ttsClientInstance) {
+      this.ttsClientInstance = new CosyVoiceTtsClient();
+    }
+    return this.ttsClientInstance;
+  }
 
   public static setOpenRouterForTest(openrouter: any) {
     this.openrouter = openrouter;
