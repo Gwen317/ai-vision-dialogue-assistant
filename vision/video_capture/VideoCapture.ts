@@ -119,13 +119,14 @@ export class VideoCapture {
             this.onPredictionsDetectedCallback(predictions);
           }
           
-          // Target typical everyday objects in the user's hand/feed
+          const now = Date.now();
+
+          // 1. Target typical everyday objects in the user's hand/feed
           const targetClasses = ['cell phone', 'cup', 'bottle', 'scissors', 'book', 'keyboard', 'mouse', 'laptop', 'handbag', 'banana', 'apple', 'orange'];
           
           const match = predictions.find(p => targetClasses.includes(p.class) && p.score > 0.65);
           if (match && this.onObjectDetectedCallback) {
             const className = match.class;
-            const now = Date.now();
             const lastAlert = this.cooldowns.get(className) || 0;
             
             if (now - lastAlert > this.cooldownMs) {
@@ -134,6 +135,24 @@ export class VideoCapture {
               this.onObjectDetectedCallback(className, base64);
             }
           }
+
+          // 2. Target people for face/role recognition
+          const people = predictions.filter(p => p.class === 'person' && p.score > 0.6);
+          people.forEach((p, idx) => {
+            const key = `person_${idx}`;
+            const lastAlert = this.cooldowns.get(key) || 0;
+            
+            if (now - lastAlert > this.cooldownMs) {
+              this.cooldowns.set(key, now);
+              console.log(`[VideoCapture] Detected person [${idx}] with confidence ${(p.score * 100).toFixed(0)}%`);
+              
+              const cropped = this.getCroppedFrame(p.bbox);
+              if (cropped && this.onObjectDetectedCallback) {
+                const cropBase64 = cropped.split(',')[1];
+                this.onObjectDetectedCallback('person', cropBase64);
+              }
+            }
+          });
         } catch (err) {
           console.error('[VideoCapture] Object detection inference error:', err);
         }
@@ -155,6 +174,11 @@ export class VideoCapture {
     }
     this.frameQueue = [];
     console.log('Video sliding window buffer capture stopped.');
+  }
+
+  public getLatestFrame(): VideoFrame | null {
+    if (this.frameQueue.length === 0) return null;
+    return this.frameQueue[this.frameQueue.length - 1];
   }
 
   public getAlignedFrames(speechStart: number, speechEnd: number): { startFrame: VideoFrame | null; endFrame: VideoFrame | null } {

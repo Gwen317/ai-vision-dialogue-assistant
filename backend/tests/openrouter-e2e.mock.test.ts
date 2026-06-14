@@ -163,10 +163,38 @@ async function main() {
   console.log(`  timeline saved model turn: ${Boolean(savedModelTurn)}`);
   assert.ok(savedModelTurn);
 
+  await testGraphReconstruction();
+
   console.log('');
   console.log('openrouter-e2e mock test passed');
 
   ModelRouter.setSpeechTranscriberForTest(null);
+}
+
+async function testGraphReconstruction() {
+  console.log('Testing graph reconstruction (Mock mode)...');
+  const memories = [
+    {
+      memory_id: 'mem-1',
+      transcript: '我拿了一个手机',
+      image_base64: 'phone-img-base64'
+    },
+    {
+      memory_id: 'mem-2',
+      transcript: '用剪刀剪开线',
+      image_base64: 'scissors-img-base64'
+    }
+  ];
+
+  const graph = await ModelRouter.reconstructGraphFromMemories(memories, 'mock');
+  console.log('Reconstructed graph:', graph);
+  
+  assert.equal(graph.nodes.length, 2);
+  assert.ok(graph.nodes.some(n => n.id === 'cell_phone' && n.image === 'phone-img-base64'));
+  assert.ok(graph.nodes.some(n => n.id === 'scissors' && n.image === 'scissors-img-base64'));
+  assert.equal(graph.links.length, 1);
+  assert.equal(graph.links[0].relation, '同历史场景');
+  console.log('testGraphReconstruction passed');
 }
 
 main().catch(error => {

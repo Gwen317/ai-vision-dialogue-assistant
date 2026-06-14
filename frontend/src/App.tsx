@@ -7,6 +7,11 @@ import { CanvasSyncRenderer } from '../../vision/drawing_sync/CanvasSyncRenderer
 import { MicVAD } from '@ricky0123/vad-web';
 import { VideoCapture } from '../../vision/video_capture/VideoCapture';
 import { D3GraphRenderer, type GraphNode, type GraphLink } from '../../memory_graph/entity_graph/D3GraphRenderer';
+import { 
+  Brain, VolumeX, Camera, Search, Video, Eye, Download, MessageSquare, 
+  Palette, RefreshCw, Plus, X, Cpu, Wrench, Tag, Sparkles, ScanLine, 
+  Clock, Link2, FileText, User 
+} from 'lucide-react';
 
 function selectSpeechMimeType(): string {
   const candidates = [
@@ -26,6 +31,61 @@ interface TimelineMessage {
   isStreaming?: boolean;
 }
 
+function parseTimelineText(text: string) {
+  const match = text.match(/^\[(.*?)\]\s*(.*)$/s);
+  if (match) {
+    const prefix = match[1].trim();
+    const remainingText = match[2];
+    
+    let icon = <Sparkles size={12} />;
+    let badgeColor = 'rgba(168, 85, 247, 0.15)';
+    let badgeTextColor = '#c084fc';
+    const cleanPrefix = prefix.replace(/[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]/g, '').trim();
+
+    if (prefix.includes('分析') || prefix.includes('建链')) {
+      icon = <Brain size={12} />;
+      badgeColor = 'rgba(168, 85, 247, 0.15)';
+      badgeTextColor = '#c084fc';
+    } else if (prefix.includes('记忆')) {
+      icon = <Camera size={12} />;
+      badgeColor = 'rgba(16, 185, 129, 0.15)';
+      badgeTextColor = '#34d399';
+    } else if (prefix.includes('检索') || prefix.includes('指令')) {
+      icon = <Search size={12} />;
+      badgeColor = 'rgba(245, 158, 11, 0.15)';
+      badgeTextColor = '#fbbf24';
+    } else if (prefix.includes('检测') || prefix.includes('视觉')) {
+      icon = <ScanLine size={12} />;
+      badgeColor = 'rgba(6, 182, 212, 0.15)';
+      badgeTextColor = '#22d3ee';
+    }
+    
+    return (
+      <div>
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '5px',
+          padding: '2px 8px',
+          borderRadius: '4px',
+          background: badgeColor,
+          color: badgeTextColor,
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          marginBottom: '8px',
+          border: `1px solid ${badgeTextColor}30`,
+          fontWeight: 600
+        }}>
+          {icon}
+          <span>{cleanPrefix}</span>
+        </div>
+        <div>{remainingText}</div>
+      </div>
+    );
+  }
+  return <div>{text}</div>;
+}
+
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [transcription, setTranscription] = useState<string>('');
@@ -43,6 +103,7 @@ export default function App() {
   const [graphLinks, setGraphLinks] = useState<GraphLink[]>([]);
   const [showGraph, setShowGraph] = useState<boolean>(false);
   const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
+  const [showDebugOverlay, setShowDebugOverlay] = useState<boolean>(true);
   const graphNodeSetRef = useRef<Set<string>>(new Set());
 
   // HTML Media Elements Refs
@@ -142,6 +203,8 @@ export default function App() {
     socket.on('connect', () => {
       setSocketConnected(true);
       console.log('Connected to backend gateway');
+      // Automatically request graph rebuild on connection
+      socket.emit('request_graph_rebuild', { llmProvider: llmProviderRef.current });
     });
 
     socket.on('disconnect', () => {
@@ -178,8 +241,8 @@ export default function App() {
           return next;
         });
 
-        // Restart local ASR when returning to LISTENING (AI finished speaking)
-        if (state === 'LISTENING' && recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
+        // Restart local ASR when returning to LISTENING or IDLE (AI finished speaking)
+        if ((state === 'LISTENING' || state === 'IDLE') && recognitionRef.current && !isSpeechRecognitionActiveRef.current) {
           try {
             recognitionRef.current.start();
           } catch (e) {
@@ -272,7 +335,7 @@ export default function App() {
       analysis: {
         shouldAdd: boolean;
         refinedLabel: string;
-        type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor';
+        type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor' | 'person';
         details: string;
         relations: Array<{ target: string; relation: string }>;
       };
@@ -296,6 +359,22 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
         }
       ]);
+    });
+
+    // Handle graph rebuild result from backend
+    socket.on('graph_rebuild_result', (data: { nodes: any[]; links: any[] }) => {
+      console.log('[App] Received graph rebuild result:', data);
+      const mappedNodes: GraphNode[] = (data.nodes || []).map((n: any) => ({
+        id: n.id,
+        label: n.label || n.refinedLabel || n.id,
+        type: n.type || 'concept',
+        image: n.image || undefined,
+        details: n.details || undefined,
+        firstSeen: n.firstSeen || new Date().toISOString()
+      }));
+      setGraphNodes(mappedNodes);
+      setGraphLinks(data.links || []);
+      graphNodeSetRef.current = new Set(mappedNodes.map(n => n.id));
     });
 
     // 2. FSM state change listener
@@ -398,6 +477,116 @@ export default function App() {
   };
 
   /**
+   * 手动停止 AI 说话（静音）并通知后端中断当前生成
+   */
+  const stopAiSpeaking = useCallback(() => {
+    console.log('[App] Manually stopping AI speaking...');
+    
+    // 1. 取消浏览器 SpeechSynthesis 播音
+    window.speechSynthesis.cancel();
+
+    // 2. 停止当前 Web Audio (CosyVoice) 播放
+    if (audioSourceRef.current) {
+      try {
+        audioSourceRef.current.stop();
+      } catch (e) {}
+      audioSourceRef.current = null;
+    }
+    audioQueueRef.current = [];
+    nextPlayIndexRef.current = 0;
+    isAudioPlayingRef.current = false;
+    isSpeakingRef.current = false;
+    isCosyVoiceActiveRef.current = false;
+
+    // 3. 通知后端中断生成
+    socketRef.current?.emit('interrupt', { offset: charOffsetRef.current });
+
+    // 4. 重置 FSM 状态为 LISTENING
+    fsmRef.current.transitionTo('LISTENING');
+  }, []);
+
+  /**
+   * 手动指令：命令 AI 记住当前画面的物品（以技能形式触发）
+   */
+  const rememberCurrentObject = useCallback(() => {
+    // 捕获当前视频帧
+    const frame = videoCaptureRef.current.getLatestFrame?.() || null;
+    const base64Frame = frame ? frame.imageBase64 : undefined;
+    
+    // 自动判断当前是否有识别出来的 Coco-SSD 物品
+    const detectedName = detectedObjects.length > 0 ? detectedObjects[0].class : '';
+    const queryText = detectedName 
+      ? `请帮我记住我手中的这个 "${detectedName}"，分析并将其录入我的实体记忆图谱中。`
+      : '请帮我分析并记住我当前画面中的物品，将其录入到我的实体记忆图谱中。';
+
+    console.log('[App] Manual remember object triggered:', detectedName);
+
+    // 发送 text_query 以便 AI 能够以语音及文字流式回复我们，并触发后台分析录入
+    socketRef.current?.emit('text_query', {
+      text: queryText,
+      llmProvider: llmProviderRef.current,
+      ttsProvider: ttsProviderRef.current,
+      imageFrame: base64Frame,
+      existingNodes: Array.from(graphNodeSetRef.current)
+    });
+
+    setTimeline(prev => [
+      ...prev,
+      {
+        id: 'user-manual-remember-' + Date.now(),
+        role: 'user',
+        text: `[📷 记忆指令] ${queryText}`,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      }
+    ]);
+  }, [detectedObjects]);
+
+  /**
+   * 手动指令：检索多模态情景记忆
+   */
+  const manualRecallMemory = useCallback(() => {
+    // 自动获取当前选中的节点或检测到的物体作为默认关键词
+    let defaultKeyword = '';
+    if (selectedGraphNode) {
+      defaultKeyword = selectedGraphNode.label;
+    } else if (detectedObjects.length > 0) {
+      defaultKeyword = detectedObjects[0].class;
+    }
+
+    const keyword = window.prompt('请输入检索关键词或物品名称（如“手机”、“水杯”、“万用表”）：', defaultKeyword);
+    if (keyword === null) return; // cancel
+    const cleanKeyword = keyword.trim();
+    if (!cleanKeyword) return;
+
+    // 捕获当前视频帧
+    const frame = videoCaptureRef.current.getLatestFrame?.() || null;
+    const base64Frame = frame ? frame.imageBase64 : undefined;
+
+    const queryText = `帮我检索并回忆关于“${cleanKeyword}”的长程多模态情景记忆。`;
+
+    console.log('[App] Manual RAG recall triggered for keyword:', cleanKeyword);
+
+    // 发送 text_query 以便 AI 回忆情景记忆并以语音文字回复
+    socketRef.current?.emit('text_query', {
+      text: queryText,
+      llmProvider: llmProviderRef.current,
+      ttsProvider: ttsProviderRef.current,
+      imageFrame: base64Frame,
+      existingNodes: Array.from(graphNodeSetRef.current)
+    });
+
+    setTimeline(prev => [
+      ...prev,
+      {
+        id: 'user-manual-recall-' + Date.now(),
+        role: 'user',
+        text: `[🔍 检索指令] ${queryText}`,
+        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      }
+    ]);
+  }, [selectedGraphNode, detectedObjects]);
+
+  /**
    * 发送摄像头检测到的物体至后端，请求 AI 智能分析与关系评估
    */
   const emitAnalyzeDetectedObject = useCallback((className: string, imageBase64?: string) => {
@@ -412,13 +601,21 @@ export default function App() {
   }, []);
 
   /**
+   * 向后端请求基于情景记忆重新构建实体图谱
+   */
+  const requestGraphRebuild = useCallback(() => {
+    console.log('[App] Requesting graph rebuild from memories using LLM provider:', llmProviderRef.current);
+    socketRef.current?.emit('request_graph_rebuild', { llmProvider: llmProviderRef.current });
+  }, []);
+
+  /**
    * 将后端 AI 确认且分析过的物体及智能关系链加入实体图谱
    */
   const addAnalyzedObjectToGraph = useCallback((
     className: string,
     analysis: {
       refinedLabel: string;
-      type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor';
+      type: 'device' | 'tool' | 'wire' | 'concept' | 'capacitor' | 'person';
       details: string;
       relations: Array<{ target: string; relation: string }>;
     },
@@ -579,9 +776,10 @@ export default function App() {
       
       const isAIPaying = isSpeakingRef.current || isAudioPlayingRef.current;
       
-      // Restart ASR if recording session is active, we are in LISTENING state, and AI is not playing
+      // Restart ASR if recording session is active, we are in LISTENING or IDLE state, and AI is not playing
+      const currentState = fsmRef.current.getCurrentState();
       if (
-        fsmRef.current.getCurrentState() === 'LISTENING' && 
+        (currentState === 'LISTENING' || currentState === 'IDLE') && 
         mediaStreamRef.current && 
         !isAIPaying
       ) {
@@ -848,11 +1046,12 @@ export default function App() {
 
       // Register local object detection callback to auto-trigger memory RAG retrieval
       videoCaptureRef.current.registerOnObjectDetected((className, base64Frame) => {
-        // Only auto-trigger if the system is currently LISTENING (ready for interaction)
-        if (fsmRef.current.getCurrentState() === 'LISTENING') {
+        // Only auto-trigger if the system is currently LISTENING or IDLE (ready for interaction)
+        const currentState = fsmRef.current.getCurrentState();
+        if (currentState === 'LISTENING' || currentState === 'IDLE') {
           console.log(`[App] Auto-triggering RAG query for detected object: ${className}`);
 
-          // 发起 AI 智能分析与关系评估后，再动态加入实体图谱
+          // 发起 AI 智能 analysis 与关系评估后，再动态加入实体图谱
           emitAnalyzeDetectedObject(className, base64Frame);
           
           setTimeline(prev => [
@@ -869,7 +1068,8 @@ export default function App() {
             text: `我手里拿着一个"${className}"，帮我回忆关于它的长程多模态情景记忆。`,
             llmProvider: llmProviderRef.current,
             ttsProvider: ttsProviderRef.current,
-            imageFrame: base64Frame
+            imageFrame: base64Frame,
+            existingNodes: Array.from(graphNodeSetRef.current)
           });
         }
       });
@@ -1001,7 +1201,8 @@ export default function App() {
         llmProvider: llmProviderRef.current,
         ttsProvider: ttsProviderRef.current,
         startFrame: startFrame ? startFrame.imageBase64 : undefined,
-        endFrame: endFrame ? endFrame.imageBase64 : undefined
+        endFrame: endFrame ? endFrame.imageBase64 : undefined,
+        existingNodes: Array.from(graphNodeSetRef.current)
       });
       isRecordingSpeechRef.current = false;
       mediaRecorderRef.current = null;
@@ -1183,9 +1384,30 @@ export default function App() {
           <button
             onClick={() => setShowGraph(prev => !prev)}
             className="btn-neon"
-            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px' }}
+            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            🧠 记忆图谱 ({graphNodes.length})
+            <Brain size={13} /> 记忆图谱 ({graphNodes.length})
+          </button>
+          <button
+            onClick={stopAiSpeaking}
+            className="btn-neon btn-neon-rose"
+            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <VolumeX size={13} /> AI 静音
+          </button>
+          <button
+            onClick={rememberCurrentObject}
+            className="btn-neon"
+            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px', background: 'linear-gradient(135deg, #10b981, #059669)', border: '1px solid #10b981', boxShadow: '0 0 10px rgba(16, 185, 129, 0.3)', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Camera size={13} /> 记忆当前物体
+          </button>
+          <button
+            onClick={manualRecallMemory}
+            className="btn-neon"
+            style={{ padding: '4px 12px', fontSize: '11px', borderRadius: '4px', background: 'linear-gradient(135deg, #f59e0b, #d97706)', border: '1px solid #f59e0b', boxShadow: '0 0 10px rgba(245, 158, 11, 0.3)', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Search size={13} /> 检索情景记忆
           </button>
           <span className={`led-dot led-${appState.toLowerCase()}`}></span>
           <span style={{ fontFamily: 'Orbitron', fontSize: '13px', textTransform: 'uppercase' }}>
@@ -1201,9 +1423,20 @@ export default function App() {
       <div className="main-area">
         {/* === LEFT: Camera Feed & Detection === */}
         <div className="cyber-card">
-          <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
-            📷 CAMERA FEED
-          </h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px', marginBottom: '8px' }}>
+            <h2 style={{ fontSize: '13px', color: '#e2e8f0', margin: 0, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+              <Video size={14} /> CAMERA FEED
+            </h2>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: '#00f2fe', cursor: 'pointer', fontFamily: 'monospace' }}>
+              <input 
+                type="checkbox" 
+                checked={showDebugOverlay} 
+                onChange={(e) => setShowDebugOverlay(e.target.checked)}
+                style={{ width: '13px', height: '13px', cursor: 'pointer' }}
+              />
+              调试信息
+            </label>
+          </div>
           
           {/* Camera Frame Box */}
           <div style={{ position: 'relative', width: '100%', aspectRatio: '4/3', background: '#000', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-neon)' }}>
@@ -1222,7 +1455,7 @@ export default function App() {
                 zIndex: 10 
               }}
             >
-              {detectedObjects.map((obj, i) => {
+              {showDebugOverlay && detectedObjects.map((obj, i) => {
                 const [x, y, w, h] = obj.bbox;
                 // Flip coordinates mathematically in JS (since video is mirrored using scaleX(-1))
                 // Center of the 640-wide SVG coordinate space is 320.
@@ -1263,14 +1496,16 @@ export default function App() {
             </svg>
 
             {/* Debug Info Overlay */}
-            <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.8)', color: '#00f2fe', padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace', zIndex: 30, pointerEvents: 'none', border: '1px solid rgba(0, 242, 254, 0.3)' }}>
-              <div>Video Intrinsic: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'unknown'}</div>
-              <div>Canvas Size: 640x480</div>
-              <div>Predictions Count: {detectedObjects.length}</div>
-              {detectedObjects.length > 0 && (
-                <div>Box[0]: {JSON.stringify(detectedObjects[0].bbox.map((n: number) => Math.round(n)))}</div>
-              )}
-            </div>
+            {showDebugOverlay && (
+              <div style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.8)', color: '#00f2fe', padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontFamily: 'monospace', zIndex: 30, pointerEvents: 'none', border: '1px solid rgba(0, 242, 254, 0.3)' }}>
+                <div>Video Intrinsic: {videoRef.current ? `${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'unknown'}</div>
+                <div>Canvas Size: 640x480</div>
+                <div>Predictions Count: {detectedObjects.length}</div>
+                {detectedObjects.length > 0 && (
+                  <div>Box[0]: {JSON.stringify(detectedObjects[0].bbox.map((n: number) => Math.round(n)))}</div>
+                )}
+              </div>
+            )}
 
             <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', gap: '10px', alignItems: 'center', zIndex: 20 }}>
               <span className={`led-dot led-${appState === 'LISTENING' ? 'listening' : 'idle'}`}></span>
@@ -1282,8 +1517,8 @@ export default function App() {
 
           {/* 🔍 识别物品与截屏调试 */}
           <div className="col-scroll" style={{ background: 'rgba(0,0,0,0.3)', borderRadius: '8px', padding: '10px', border: '1px solid rgba(0, 242, 254, 0.15)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <span style={{ fontSize: '10px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'block', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', flexShrink: 0 }}>
-              🔍 识别物品 (Detected Objects)
+            <span style={{ fontSize: '10px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center', gap: '6px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px', flexShrink: 0 }}>
+              <Eye size={12} /> 识别物品 (Detected Objects)
             </span>
             {detectedObjects.length === 0 ? (
               <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0, fontStyle: 'italic' }}>
@@ -1317,14 +1552,14 @@ export default function App() {
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '4px',
+                          gap: '6px',
                           boxShadow: '0 0 8px rgba(0, 242, 254, 0.4)',
                           transition: 'transform 0.1s ease'
                         }}
                         onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.95)')}
                         onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
                       >
-                        📸 截屏保存
+                        <Camera size={12} /> 截屏保存
                       </button>
                     </div>
                   );
@@ -1348,8 +1583,8 @@ export default function App() {
         <div className="cyber-card">
           {/* Timeline Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0 }}>
-            <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
-              💬 DIALOGUE TIMELINE
+            <span style={{ fontSize: '12px', color: '#a855f7', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+              <MessageSquare size={13} /> DIALOGUE TIMELINE
             </span>
             <button 
               onClick={clearLogs} 
@@ -1379,7 +1614,7 @@ export default function App() {
                       <span className="timeline-time">{msg.timestamp}</span>
                     </div>
                     <div className="timeline-text">
-                      {msg.text}
+                      {parseTimelineText(msg.text)}
                       {msg.isStreaming && <span className="typing-cursor"></span>}
                     </div>
                   </div>
@@ -1471,8 +1706,8 @@ export default function App() {
 
         {/* === RIGHT: Canvas & Config === */}
         <div className="cyber-card">
-          <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px' }}>
-            🎨 SCHEMATIC CANVAS
+          <h2 style={{ fontSize: '13px', color: '#e2e8f0', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '6px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <Palette size={14} /> SCHEMATIC CANVAS
           </h2>
 
           {/* Drawing Canvas Box */}
@@ -1606,8 +1841,8 @@ export default function App() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px', marginBottom: '10px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '12px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold' }}>
-                  🧠 ENTITY MEMORY GRAPH
+                <span style={{ fontSize: '12px', color: '#00f2fe', fontFamily: 'Orbitron', textTransform: 'uppercase', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <Brain size={14} /> ENTITY MEMORY GRAPH
                 </span>
                 <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'monospace' }}>
                   {graphNodes.length} nodes · {graphLinks.length} links
@@ -1615,24 +1850,31 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
+                  onClick={requestGraphRebuild}
+                  className="btn-neon"
+                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                >
+                  <RefreshCw size={11} /> 从记忆重建
+                </button>
+                <button
                   onClick={() => {
                     detectedObjects.forEach(obj => {
                       const frame = videoCaptureRef.current.getLatestFrame?.();
-                      emitAnalyzeDetectedObject(obj.class, frame || undefined);
+                      emitAnalyzeDetectedObject(obj.class, frame?.imageBase64 || undefined);
                     });
                   }}
                   className="btn-neon"
-                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', opacity: detectedObjects.length > 0 ? 1 : 0.4 }}
+                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', opacity: detectedObjects.length > 0 ? 1 : 0.4, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                   disabled={detectedObjects.length === 0}
                 >
-                  + 导入当前检测物体
+                  <Plus size={11} /> 导入当前检测物体
                 </button>
                 <button
                   onClick={() => setShowGraph(false)}
                   className="btn-neon btn-neon-rose"
-                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px' }}
+                  style={{ padding: '4px 12px', fontSize: '10px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                 >
-                  ✕ 关闭
+                  <X size={11} /> 关闭
                 </button>
               </div>
             </div>
@@ -1647,7 +1889,9 @@ export default function App() {
                     border: '1px dashed rgba(0, 242, 254, 0.2)', background: '#0b0f19',
                     color: '#4a5568', fontFamily: "'Inter', sans-serif", textAlign: 'center', padding: '40px'
                   }}>
-                    <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}>🧠</div>
+                    <div style={{ marginBottom: '16px', opacity: 0.3, color: '#00f2fe' }}>
+                      <Brain size={48} />
+                    </div>
                     <div style={{ fontSize: '14px', marginBottom: '8px' }}>实体图谱为空</div>
                     <div style={{ fontSize: '12px', color: '#3a4553', lineHeight: 1.6 }}>
                       将物品放置在摄像头前方，系统会自动检测并识别。<br/>
@@ -1691,18 +1935,23 @@ export default function App() {
                       {selectedGraphNode.type}
                     </div>
                     {selectedGraphNode.details && (
-                      <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.5, marginBottom: '8px' }}>
-                        📋 {selectedGraphNode.details}
+                      <div style={{ fontSize: '12px', color: '#94a3b8', lineHeight: 1.5, marginBottom: '8px', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                        <FileText size={14} style={{ marginTop: '2px', flexShrink: 0 }} />
+                        <span>{selectedGraphNode.details}</span>
                       </div>
                     )}
                     {selectedGraphNode.firstSeen && (
-                      <div style={{ fontSize: '11px', color: '#4a5568' }}>
-                        🕐 首次发现: {new Date(selectedGraphNode.firstSeen).toLocaleString('zh-CN')}
+                      <div style={{ fontSize: '11px', color: '#4a5568', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Clock size={12} />
+                        <span>首次发现: {new Date(selectedGraphNode.firstSeen).toLocaleString('zh-CN')}</span>
                       </div>
                     )}
                     {/* 显示关联的边 */}
                     <div style={{ marginTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '8px' }}>
-                      <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '6px' }}>🔗 关联节点</div>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Link2 size={12} />
+                        <span>关联节点</span>
+                      </div>
                       {graphLinks
                         .filter(l => {
                           const s = typeof l.source === 'string' ? l.source : l.source.id;
@@ -1760,8 +2009,8 @@ export default function App() {
                           style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover', border: '1px solid rgba(0,242,254,0.15)', flexShrink: 0 }}
                         />
                       ) : (
-                        <div style={{ width: 36, height: 36, borderRadius: 6, background: 'rgba(0,242,254,0.05)', border: '1px solid rgba(0,242,254,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', flexShrink: 0 }}>
-                          {node.type === 'device' ? '⚡' : node.type === 'tool' ? '🔧' : '◆'}
+                        <div style={{ width: 36, height: 36, borderRadius: 6, background: 'rgba(0,242,254,0.05)', border: '1px solid rgba(0,242,254,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00f2fe', flexShrink: 0 }}>
+                          {node.type === 'device' ? <Cpu size={16} /> : node.type === 'tool' ? <Wrench size={16} /> : node.type === 'person' ? <User size={16} /> : <Tag size={16} />}
                         </div>
                       )}
                       <div style={{ overflow: 'hidden' }}>

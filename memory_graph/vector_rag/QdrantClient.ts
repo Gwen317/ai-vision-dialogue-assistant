@@ -11,6 +11,9 @@
  * - vector_image: 多模态视觉向量 (512维)
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 /** 向量数据库中单个记忆点的结构 */
 export interface MemoryPoint {
   id: string;
@@ -50,6 +53,7 @@ export class QdrantClient {
   private textDim: number;
   private imageDim: number;
   private useQdrant: boolean = false;
+  private localFilePath: string = path.resolve(process.cwd(), 'memories_local.json');
 
   /** 内存降级模式的存储 */
   private inMemoryStore: InMemoryPoint[] = [];
@@ -88,6 +92,7 @@ export class QdrantClient {
 
     this.useQdrant = false;
     console.log('[QdrantClient] Running in IN-MEMORY fallback mode (no Qdrant connection)');
+    this.loadFromLocalFile();
   }
 
   /**
@@ -219,6 +224,7 @@ export class QdrantClient {
       });
     } else {
       this.inMemoryStore = this.inMemoryStore.filter(p => p.id !== id);
+      this.saveToLocalFile();
     }
   }
 
@@ -245,6 +251,43 @@ export class QdrantClient {
    */
   public getMode(): string {
     return this.useQdrant ? `qdrant:${this.url}` : 'in-memory';
+  }
+
+  /**
+   * 滚动获取所有记忆点
+   */
+  public async scrollPoints(limit: number = 100): Promise<SearchResult[]> {
+    if (this.useQdrant) {
+      const headers = this.buildHeaders();
+      try {
+        const res = await fetch(`${this.url}/collections/${this.collectionName}/points/scroll`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            limit,
+            with_payload: true,
+            with_vector: false
+          })
+        });
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          return (data.result?.points || []).map((r: any) => ({
+            id: r.id,
+            score: 1.0,
+            payload: r.payload
+          }));
+        }
+      } catch (err) {
+        console.error('[QdrantClient] Scroll failed:', err);
+      }
+      return [];
+    }
+    // 内存降级模式
+    return this.inMemoryStore.map(p => ({
+      id: p.id,
+      score: 1.0,
+      payload: p.payload
+    }));
   }
 
   // ─────────────────────────────────────────────
@@ -331,6 +374,7 @@ export class QdrantClient {
     }
 
     console.log(`[QdrantClient:InMemory] Upserted point ${point.id}, total: ${this.inMemoryStore.length}`);
+    this.saveToLocalFile();
   }
 
   private inMemorySearch(vectorName: 'vector_text' | 'vector_image', queryVector: number[], limit: number): SearchResult[] {
@@ -359,6 +403,31 @@ export class QdrantClient {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) headers['api-key'] = this.apiKey;
     return headers;
+  }
+
+  private loadFromLocalFile(): void {
+    try {
+      if (fs.existsSync(this.localFilePath)) {
+        const data = fs.readFileSync(this.localFilePath, 'utf-8');
+        this.inMemoryStore = JSON.parse(data);
+        console.log(`[QdrantClient:InMemory] Loaded ${this.inMemoryStore.length} points from local file: ${this.localFilePath}`);
+      } else {
+        this.inMemoryStore = [];
+        console.log(`[QdrantClient:InMemory] Local persistence file not found, starting empty.`);
+      }
+    } catch (err) {
+      console.error('[QdrantClient:InMemory] Failed to load local memories file:', err);
+      this.inMemoryStore = [];
+    }
+  }
+
+  private saveToLocalFile(): void {
+    try {
+      fs.writeFileSync(this.localFilePath, JSON.stringify(this.inMemoryStore, null, 2), 'utf-8');
+      console.log(`[QdrantClient:InMemory] Saved ${this.inMemoryStore.length} points to local file: ${this.localFilePath}`);
+    } catch (err) {
+      console.error('[QdrantClient:InMemory] Failed to save memories to local file:', err);
+    }
   }
 
   /**

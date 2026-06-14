@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { ModelRouter } from '../model_router/ModelRouter';
+import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
 
 interface ImageFrameEvent {
   type: 'image';
@@ -35,6 +36,7 @@ interface VADEndPayload {
   ttsProvider?: string;
   startFrame?: string;
   endFrame?: string;
+  existingNodes?: string[];
 }
 
 interface VADStartPayload {
@@ -48,6 +50,7 @@ interface TextQueryPayload {
   llmProvider?: string;
   ttsProvider?: string;
   imageFrame?: string;
+  existingNodes?: string[];
 }
 
 interface Session {
@@ -206,7 +209,8 @@ export class SocketGateway {
             },
             session.abortController.signal,
             payload.llmProvider,
-            payload.ttsProvider
+            payload.ttsProvider,
+            payload.existingNodes
           );
         } catch (err) {
           console.error('Error processing text query:', err);
@@ -282,7 +286,8 @@ export class SocketGateway {
             session.abortController.signal,
             localText,
             payload?.llmProvider,
-            payload?.ttsProvider
+            payload?.ttsProvider,
+            payload?.existingNodes
           );
         } catch (err: any) {
           if (err.name === 'AbortError') {
@@ -394,6 +399,21 @@ export class SocketGateway {
               relations: []
             }
           });
+        }
+      });
+
+      // Handle graph rebuild request
+      socket.on('request_graph_rebuild', async (payload?: { llmProvider?: string }) => {
+        console.log(`[SocketGateway] Received 'request_graph_rebuild' from client ${socket.id}`);
+        try {
+          const memories = await EpisodicMemoryService.getAllMemories();
+          console.log(`[SocketGateway] Reconstructing graph from ${memories.length} memory cards...`);
+          const graph = await ModelRouter.reconstructGraphFromMemories(memories, payload?.llmProvider);
+          socket.emit('graph_rebuild_result', graph);
+          console.log(`[SocketGateway] Emitted 'graph_rebuild_result' with ${graph.nodes.length} nodes and ${graph.links.length} links.`);
+        } catch (err) {
+          console.error('[SocketGateway] Failed to rebuild graph:', err);
+          socket.emit('graph_rebuild_result', { nodes: [], links: [] });
         }
       });
 

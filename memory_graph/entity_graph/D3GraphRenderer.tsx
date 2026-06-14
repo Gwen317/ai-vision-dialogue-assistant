@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as d3 from 'd3';
+import { FileText, Clock, Link2 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
 //  类型定义
@@ -8,7 +9,7 @@ import * as d3 from 'd3';
 export interface GraphNode extends d3.SimulationNodeDatum {
   id: string;
   label: string;
-  type: 'device' | 'capacitor' | 'tool' | 'wire' | 'concept';
+  type: 'device' | 'capacitor' | 'tool' | 'wire' | 'concept' | 'person';
   image?: string;          // Base64 截图
   details?: string;        // AI 分析记录
   firstSeen?: string;      // ISO8601 首次出现时间
@@ -35,7 +36,8 @@ const NODE_COLORS: Record<GraphNode['type'], string> = {
   capacitor: '#ff007f',   // 品红 — 电容
   tool: '#39ff14',        // 荧光绿 — 工具
   wire: '#ffd700',        // 金色 — 导线
-  concept: '#bc13fe'      // 紫色 — 普通概念
+  concept: '#bc13fe',     // 紫色 — 普通概念
+  person: '#ff9f0a'       // 橙色 — 人物/人脸
 };
 
 const NODE_TYPE_LABELS: Record<GraphNode['type'], string> = {
@@ -43,7 +45,8 @@ const NODE_TYPE_LABELS: Record<GraphNode['type'], string> = {
   capacitor: '电容',
   tool: '工具',
   wire: '导线',
-  concept: '概念'
+  concept: '概念',
+  person: '人物'
 };
 
 // ─────────────────────────────────────────────
@@ -145,15 +148,19 @@ const TooltipCard: React.FC<{ data: TooltipData | null; onClose: () => void }> =
       {/* AI 分析记录 */}
       {node.details && (
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 11, color: '#8a99ad', marginBottom: 4 }}>📋 AI 分析记录</div>
+          <div style={{ fontSize: 11, color: '#8a99ad', marginBottom: 4, display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <FileText size={12} />
+            <span>AI 分析记录</span>
+          </div>
           <div style={{ lineHeight: 1.5, color: '#c0c8d4' }}>{node.details}</div>
         </div>
       )}
 
       {/* 首次出现时间 */}
       {node.firstSeen && (
-        <div style={{ fontSize: 11, color: '#6b7a8d', marginTop: 8 }}>
-          🕐 首次发现：{new Date(node.firstSeen).toLocaleString('zh-CN')}
+        <div style={{ fontSize: 11, color: '#6b7a8d', marginTop: 8, display: 'flex', alignItems: 'center', gap: '5px' }}>
+          <Clock size={12} />
+          <span>首次发现：{new Date(node.firstSeen).toLocaleString('zh-CN')}</span>
         </div>
       )}
     </div>
@@ -305,10 +312,11 @@ export const D3GraphRenderer: React.FC<D3GraphRendererProps> = ({ nodes, links, 
       .style('fill', '#0b0f19')
       .text(d => {
         switch (d.type) {
-          case 'device': return '⚡';
+          case 'device': return '⏻';
           case 'capacitor': return '⊥';
-          case 'tool': return '🔧';
-          case 'wire': return '~';
+          case 'tool': return '⚙';
+          case 'wire': return '∼';
+          case 'person': return '👤';
           default: return '◆';
         }
       });

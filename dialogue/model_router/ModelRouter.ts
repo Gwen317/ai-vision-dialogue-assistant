@@ -340,7 +340,8 @@ export class ModelRouter {
     signal: AbortSignal,
     localText?: string,
     overrideLlmProvider?: string,
-    overrideTtsProvider?: string
+    overrideTtsProvider?: string,
+    existingNodes?: string[]
   ): Promise<void> {
     const dashscopeKey = process.env.DASHSCOPE_API_KEY;
     const openrouterKey = process.env.OPENROUTER_API_KEY;
@@ -522,7 +523,12 @@ export class ModelRouter {
     }
 
     // 3. Construct System Instruction / Prompt with memory context
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
+      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
+      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
+      '2. Refer to current images as what you see right now in the active video feed or what the user is currently showing you on camera (e.g. "我看到你正拿着...", "你在镜头前展示的是...").\n' +
+      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过...", "你刚才在视频里给我看过的...").\n\n' +
+      'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000); // Minutes
@@ -650,6 +656,16 @@ export class ModelRouter {
     EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
       .catch(err => console.error('Background memory recording failed:', err));
 
+    // Asynchronously extract and analyze physical entities mentioned in the dialogue to auto-insert them into the graph
+    this.extractAndAnalyzeEntitiesFromDialogue(
+      socket,
+      userSpeech,
+      fullResponseText,
+      currentImageBase64,
+      existingNodes || [],
+      overrideLlmProvider
+    ).catch(err => console.error('Background entity extraction and analysis failed:', err));
+
     socket.emit('state_change', 'IDLE');
   }
 
@@ -661,7 +677,8 @@ export class ModelRouter {
     turnTiming: TurnTiming,
     signal: AbortSignal,
     overrideLlmProvider?: string,
-    overrideTtsProvider?: string
+    overrideTtsProvider?: string,
+    existingNodes?: string[]
   ): Promise<void> {
     const dashscopeKey = process.env.DASHSCOPE_API_KEY;
     const openrouterKey = process.env.OPENROUTER_API_KEY;
@@ -689,7 +706,12 @@ export class ModelRouter {
       return;
     }
 
-    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You have access to the user\'s real-time camera feed and microphone. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\nIMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
+    let systemInstruction = 'You are a futuristic, helpful AI Vision Dialogue Assistant. You are currently in a real-time, live video and audio call with the user. You have access to the user\'s real-time camera video stream (provided as image frames in messages) and microphone audio stream. Answer clearly, naturally, and concisely in Chinese. (请使用中文回答用户。)\n\n' +
+      'SCENARIO CONTEXT & VISUAL GUIDELINES:\n' +
+      '1. Remember that this is a live video call. Never refer to the images as "selfies" (自拍), "uploaded photos", or "screenshots".\n' +
+      '2. Refer to current images as what you see right now in the active video feed or what the user is currently showing you on camera (e.g. "我看到你正拿着...", "你在镜头前展示的是...").\n' +
+      '3. When referring to recalled memories with images, refer to them as what you saw in previous video call sessions or earlier in this call (e.g. "我们上次视频通话见过...", "你刚才在视频里给我看过的...").\n\n' +
+      'IMPORTANT: If you see "[System: Your previous response was interrupted]" in the conversation history, the user cut you off mid-response. Continue seamlessly from the exact breakpoint — do NOT repeat what you already said. Incorporate the user\'s new input into your continued reasoning.';
     if (recalledMemory) {
       const timeDiff = Math.round((Date.now() - recalledMemory.timestamp.getTime()) / 60000);
       const entityInfo = recalledMemory.entityTags?.length
@@ -798,6 +820,16 @@ export class ModelRouter {
     EpisodicMemoryService.recordMemory(userSpeech, fullResponseText, currentImageBase64)
       .catch(err => console.error('Background memory recording failed:', err));
 
+    // Asynchronously extract and analyze physical entities mentioned in the dialogue to auto-insert them into the graph
+    this.extractAndAnalyzeEntitiesFromDialogue(
+      socket,
+      userSpeech,
+      fullResponseText,
+      currentImageBase64,
+      existingNodes || [],
+      overrideLlmProvider
+    ).catch(err => console.error('Background entity extraction and analysis failed:', err));
+
     socket.emit('state_change', 'IDLE');
   }
 
@@ -846,8 +878,8 @@ export class ModelRouter {
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     
     const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
-    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_');
-    const useOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_');
+    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_') && !dashscopeKey.startsWith('test-');
+    const useOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_') && !openrouterKey.startsWith('test-');
 
     const recentMessages = timeline
       .filter((event): event is ConversationMessageEvent => event.type === 'message')
@@ -874,21 +906,25 @@ ${existingNodes.length > 0 ? existingNodes.map(n => `- ${n}`).join('\n') : '(无
 请结合时间、上下文信息以及摄像头图片（若提供），对该物体进行一次智能语义分析，以决定它是否应该进入我们的实体记忆图谱中。
 
 注意：
-1. shouldAdd: 如果此物体仅仅是背景杂音（例如检测到了 person，但其实这只是用户本人，图谱不需要记录用户本人作为物品；或者检测错误/无关噪点），则设为 false；如果它是一个重要的物理实体（如电容、仪器、手机、电阻、剪刀等工具或设备），尤其是用户在对话中提到过或正在使用的，设为 true。
-2. refinedLabel: 细化名称。如果上下文明确了该物体的具体名称（例如用户提到“这是我的万用表”，而标签只是“electronic device”），请将其重命名为更具体、有温度的中文名（如“万用表”）；若无更具体命名，请翻译为通俗的中文名（如 "cell phone" -> "智能手机"）。
-3. type: 必须是以下五个值之一：'device'（设备/仪器）、'tool'（工具）、'wire'（连线）、'concept'（普通概念）、'capacitor'（电容/元器件）。
-4. details: 结合对话上下文与时间，写一句分析描述（例如：“用户在 19:30 调试电路时使用的剪刀，用于修剪导线。”）。
-5. relations: 分析该物体与“已存在的节点”之间的语义关联（例如，万用表和电阻之间有“测量”关系，面包板和导线之间有“插接”关系）。
+1. shouldAdd: 
+   - 如果此物体是检测到了 "person"（人），我们需要对其进行人脸/角色认知：
+     - 如果他是系统的主用户（坐在正中央，经常发声提问），将其作为实体录入，其名称为 "Gwen"；
+     - 如果他是新进入画面的其他人（用户的朋友），将其作为实体录入，名称为 "Friend"（或者结合对话上下文若得知其名字如"Jerry"，则为具体名字）；
+     - 请将此类人节点的 shouldAdd 设为 true。
+   - 如果是其他重要的物理实体（如电容、仪器、手机、电阻等），设为 true。
+   - 如果是背景杂音或无关噪点，设为 false。
+2. refinedLabel: 细化名称。如 "Gwen", "Friend", "万用表", "智能手机" 等。
+3. type: 必须是以下六个值之一：'device'（设备/仪器）、'tool'（工具）、'wire'（连线）、'concept'（普通概念）、'capacitor'（电容/元器件）、'person'（人物）。
+4. details: 结合对话上下文与时间，写一句分析描述（例如：“系统主用户 Gwen，正在调试电路。”或“Gwen 的朋友，在 10:38 进入视频通话画面。”）。
+5. relations: 分析新物体与“已存在的节点”之间的语义关联（目标 target 必须是已存在节点列表里的 ID，例如万用表和电阻之间有“测量”关系，面部检测和人之间有“关联”关系）。
 
 请严格只返回一个 JSON 对象，格式如下：
 {
   "shouldAdd": true,
-  "refinedLabel": "智能手机",
-  "type": "device",
-  "details": "用户在对话中用以展示或调试的手机设备。",
-  "relations": [
-    { "target": "existing_node_id", "relation": "连接到" }
-  ]
+  "refinedLabel": "Gwen",
+  "type": "person",
+  "details": "系统主用户 Gwen，正在调试电路。",
+  "relations": []
 }
 不要包含任何 markdown 块或额外的解释文字。`;
 
@@ -947,13 +983,24 @@ ${existingNodes.length > 0 ? existingNodes.map(n => `- ${n}`).join('\n') : '(无
     } else {
       console.log('[ModelRouter] Object analysis running in MOCK mode.');
       const lowerClass = className.toLowerCase();
+      
+      if (lowerClass === 'person') {
+        const hasGwen = existingNodes.includes('gwen');
+        return {
+          shouldAdd: true,
+          refinedLabel: hasGwen ? 'Friend' : 'Gwen',
+          type: 'person',
+          details: hasGwen ? '视频通话中进入画面的用户朋友。' : '系统主用户 Gwen。',
+          relations: []
+        };
+      }
+      
       const shouldAdd = lowerClass !== 'person';
       
       const mockRefinedLabels: Record<string, { refinedLabel: string; type: string; details: string }> = {
         'cell phone': { refinedLabel: '智能手机', type: 'device', details: `于时间 ${new Date().toLocaleTimeString()} 视觉检测到的手机设备，结合上下文用于互动。` },
         'scissors': { refinedLabel: '安全剪刀', type: 'tool', details: `于时间 ${new Date().toLocaleTimeString()} 检测到的裁剪工具，在组装场景中使用。` },
-        'cup': { refinedLabel: '水杯', type: 'concept', details: `于时间 ${new Date().toLocaleTimeString()} 放置在桌面上的饮水容器。` },
-        'person': { refinedLabel: '用户本人', type: 'concept', details: '互动的参与主体。' }
+        'cup': { refinedLabel: '水杯', type: 'concept', details: `于时间 ${new Date().toLocaleTimeString()} 放置在桌面上的饮水容器。` }
       };
       
       const mockInfo = mockRefinedLabels[lowerClass] || {
@@ -996,6 +1043,380 @@ ${existingNodes.length > 0 ? existingNodes.map(n => `- ${n}`).join('\n') : '(无
         details: `自动检测到的"${className}"。`,
         relations: []
       };
+    }
+  }
+
+  /**
+   * 后台异步：从对话文本与图像中提取物理实体，智能过滤并推送给前端图谱
+   */
+  public static async extractAndAnalyzeEntitiesFromDialogue(
+    socket: Socket,
+    userSpeech: string,
+    aiResponse: string,
+    imageBase64: string | null,
+    existingNodes: string[],
+    overrideLlmProvider?: string
+  ): Promise<void> {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_') && !dashscopeKey.startsWith('test-');
+    const useOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_') && !openrouterKey.startsWith('test-');
+
+    const combinedTranscript = `用户: ${userSpeech}\nAI助手: ${aiResponse}`;
+
+    // 1. If in mock mode or no API key, use keyword-based fallback
+    if (!useDashScope && !useOpenRouter) {
+      console.log('[ModelRouter] Dialogue entity extraction running in MOCK mode.');
+      const lowerText = combinedTranscript.toLowerCase();
+      const mockEntities: Array<{ className: string; refinedLabel: string; type: string; details: string }> = [];
+      
+      if (lowerText.includes('手机') || lowerText.includes('phone')) {
+        mockEntities.push({ className: 'cell phone', refinedLabel: '智能手机', type: 'device', details: '对话中提及的手机设备。' });
+      }
+      if (lowerText.includes('剪刀') || lowerText.includes('scissors')) {
+        mockEntities.push({ className: 'scissors', refinedLabel: '安全剪刀', type: 'tool', details: '对话中涉及的剪裁工具。' });
+      }
+      if (lowerText.includes('杯子') || lowerText.includes('cup') || lowerText.includes('水杯')) {
+        mockEntities.push({ className: 'cup', refinedLabel: '水杯', type: 'concept', details: '对话中提及的水杯。' });
+      }
+      if (lowerText.includes('万用表') || lowerText.includes('multimeter')) {
+        mockEntities.push({ className: 'multimeter', refinedLabel: '数字万用表', type: 'device', details: '对话中提及的数字万用表设备。' });
+      }
+      if (lowerText.includes('电阻') || lowerText.includes('resistor')) {
+        mockEntities.push({ className: 'resistor', refinedLabel: '贴片电阻', type: 'capacitor', details: '对话中提及的贴片电阻电子元器件。' });
+      }
+
+      for (const entity of mockEntities) {
+        const mockRelations: Array<{ target: string; relation: string }> = [];
+        if (existingNodes.length > 0) {
+          mockRelations.push({ target: existingNodes[0], relation: '同场景相关' });
+        }
+        socket.emit('object_analysis_result', {
+          className: entity.className,
+          imageFrame: imageBase64,
+          analysis: {
+            shouldAdd: true,
+            refinedLabel: entity.refinedLabel,
+            type: entity.type,
+            details: entity.details,
+            relations: mockRelations
+          }
+        });
+      }
+      return;
+    }
+
+    // 2. Real LLM inference
+    const prompt = `你是一个辅助 AI 视觉对话助手的实体分析大脑。
+我们刚刚结束了一轮对话，你需要提取和分析对话中提到的或摄像头画面中出现的物理实体与人物角色，以决定它们是否应该录入实体记忆图谱中。
+
+对话历史：
+${combinedTranscript}
+
+当前图谱中已存在的节点 (Existing Nodes in Graph)：
+${existingNodes.length > 0 ? existingNodes.map(n => `- ${n}`).join('\n') : '(无)'}
+
+任务：
+1. 找出对话文本中提到、或者摄像头画面中出现的有价值的物理实体（如万用表、电容、电阻、安全剪刀、水杯等）或人物角色（如系统主用户 "Gwen"、其朋友 "Friend" / 具体名字）。
+2. 判断是否应该录入图谱中。
+3. 确定它们的中文细化名称 (refinedLabel), 类型 (type, 只能是 'device' | 'tool' | 'wire' | 'concept' | 'capacitor' | 'person' 之一), 详细分析描述 (details) 以及与已有节点的关系 (relations)。
+
+注意：
+1. type 必须是以下六个值之一：'device'（设备/仪器）、'tool'（工具）、'wire'（连线）、'concept'（普通概念）、'capacitor'（电容/元器件）、'person'（人物）。
+2. refinedLabel: 细化名称。如“万用表”、“面包板”、“Gwen”等。
+3. details: 结合对话上下文与时间，写一句分析描述。
+4. relations: 分析新物体与“已存在的节点”之间的语义关联（目标 target 必须是已存在节点列表里的 ID）。
+
+请严格只返回一个 JSON 数组，格式如下：
+[
+  {
+    "className": "person",
+    "shouldAdd": true,
+    "refinedLabel": "Gwen",
+    "type": "person",
+    "details": "系统主用户 Gwen，与 AI 助手讨论电路调试。",
+    "relations": []
+  }
+]
+不要包含任何 markdown 块或额外的解释文字。`;
+
+    let resultText = '';
+
+    try {
+      if (useDashScope) {
+        const modelName = process.env.DASHSCOPE_CHAT_MODEL || 'qwen-vl-plus';
+        const client = new OpenAI({
+          apiKey: dashscopeKey,
+          baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        });
+
+        const contentParts: any[] = [{ type: 'text', text: prompt }];
+        if (imageBase64) {
+          contentParts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${imageBase64}`
+            }
+          });
+        }
+
+        const response = await client.chat.completions.create({
+          model: modelName,
+          messages: [{ role: 'user', content: contentParts }],
+          temperature: 0.2
+        });
+
+        resultText = response.choices[0]?.message?.content || '';
+      } else if (useOpenRouter) {
+        const modelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
+        const client = new OpenAI({
+          apiKey: openrouterKey,
+          baseURL: 'https://openrouter.ai/api/v1'
+        });
+
+        const contentParts: any[] = [{ type: 'text', text: prompt }];
+        if (imageBase64) {
+          contentParts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${imageBase64}`
+            }
+          });
+        }
+
+        const response = await client.chat.completions.create({
+          model: modelName,
+          messages: [{ role: 'user', content: contentParts }],
+          temperature: 0.2
+        });
+
+        resultText = response.choices[0]?.message?.content || '';
+      }
+
+      console.log(`[ModelRouter] Background dialogue entity analysis raw response:\n${resultText}`);
+
+      let entities: any[] = [];
+      const match = resultText.match(/\[[\s\S]*\]/);
+      if (match) {
+        entities = JSON.parse(match[0]);
+      } else {
+        entities = JSON.parse(resultText);
+      }
+
+      if (Array.isArray(entities)) {
+        for (const item of entities) {
+          if (item.shouldAdd && item.className) {
+            socket.emit('object_analysis_result', {
+              className: item.className,
+              imageFrame: imageBase64,
+              analysis: {
+                shouldAdd: true,
+                refinedLabel: item.refinedLabel || item.className,
+                type: item.type || 'concept',
+                details: item.details || `由 AI 从对话提取的 "${item.refinedLabel || item.className}"。`,
+                relations: item.relations || []
+              }
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[ModelRouter] Failed to analyze entities from dialogue background:', err);
+    }
+  }
+
+  /**
+   * 后台从长期记忆中动态重建实体图谱
+   */
+  public static async reconstructGraphFromMemories(
+    memories: any[],
+    overrideLlmProvider?: string
+  ): Promise<{ nodes: any[]; links: any[] }> {
+    const dashscopeKey = process.env.DASHSCOPE_API_KEY;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    
+    const llmProvider = (overrideLlmProvider || process.env.LLM_PROVIDER || 'openrouter').toLowerCase();
+    const useDashScope = llmProvider === 'dashscope' && dashscopeKey && dashscopeKey !== 'mock' && !dashscopeKey.startsWith('your_') && !dashscopeKey.startsWith('test-');
+    const useOpenRouter = llmProvider === 'openrouter' && openrouterKey && openrouterKey !== 'mock' && !openrouterKey.startsWith('your_') && !openrouterKey.startsWith('test-');
+
+    if (memories.length === 0) {
+      return { nodes: [], links: [] };
+    }
+
+    // 1. Mock Mode fallback
+    if (!useDashScope && !useOpenRouter) {
+      console.log('[ModelRouter] Graph reconstruction running in MOCK mode.');
+      const nodes: any[] = [];
+      const links: any[] = [];
+      const nodeSet = new Set<string>();
+
+      // Read memories and extract predetermined mocks
+      for (const m of memories) {
+        const lower = (m.transcript || '').toLowerCase();
+        const image = m.image_base64 || undefined;
+
+        if ((lower.includes('手机') || lower.includes('phone')) && !nodeSet.has('cell_phone')) {
+          nodeSet.add('cell_phone');
+          nodes.push({ id: 'cell_phone', refinedLabel: '智能手机', type: 'device', details: '从历史对话中恢复的手机设备。', image });
+        }
+        if ((lower.includes('剪刀') || lower.includes('scissors')) && !nodeSet.has('scissors')) {
+          nodeSet.add('scissors');
+          nodes.push({ id: 'scissors', refinedLabel: '安全剪刀', type: 'tool', details: '从历史对话中恢复的裁剪工具。', image });
+        }
+        if ((lower.includes('杯子') || lower.includes('cup') || lower.includes('水杯')) && !nodeSet.has('cup')) {
+          nodeSet.add('cup');
+          nodes.push({ id: 'cup', refinedLabel: '水杯', type: 'concept', details: '从历史对话中恢复的水杯容器。', image });
+        }
+        if ((lower.includes('万用表') || lower.includes('multimeter')) && !nodeSet.has('multimeter')) {
+          nodeSet.add('multimeter');
+          nodes.push({ id: 'multimeter', refinedLabel: '数字万用表', type: 'device', details: '从历史对话中恢复的数字万用表。', image });
+        }
+        if ((lower.includes('电阻') || lower.includes('resistor')) && !nodeSet.has('resistor')) {
+          nodeSet.add('resistor');
+          nodes.push({ id: 'resistor', refinedLabel: '贴片电阻', type: 'capacitor', details: '从历史对话中恢复的贴片电阻。', image });
+        }
+      }
+
+      // Build basic links if multiple nodes exist
+      const nodeIds = nodes.map(n => n.id);
+      if (nodeIds.length > 1) {
+        for (let i = 1; i < nodeIds.length; i++) {
+          links.push({ source: nodeIds[i - 1], target: nodeIds[i], relation: '同历史场景' });
+        }
+      }
+
+      return { nodes, links };
+    }
+
+    // 2. Real LLM inference
+    // Compact memories layout for token reduction
+    const memoriesSummary = memories.map((m, i) => {
+      return `卡片【${i}】:
+ID: ${m.memory_id || 'unknown'}
+时间: ${m.timestamp || 'unknown'}
+对话摘要: ${m.description || '无'}
+提取标签: [${(m.tags || []).join(', ')}]
+对话录音记录:
+${(m.transcript || '').slice(0, 500)}
+---`;
+    }).join('\n\n');
+
+    const prompt = `你是一个辅助 AI 视觉对话助手的图谱重建大脑。
+我们从向量数据库中加载了当前用户的所有长期情景记忆卡片，请你根据这些历史记录，重新梳理并构建出一个实体关系拓扑图谱。
+
+历史情景记忆卡片列表：
+${memoriesSummary}
+
+任务：
+1. 找出历史记忆中涉及到的所有关键物理实体（如设备、工具、元器件、关键概念）与人物角色（如主用户 "Gwen"、其朋友 "Friend" / 具体名字）。
+2. 对每个实体进行智能合并（例如在不同对话里出现的“万用表”应属于同一个节点），确定它的中文细化名称 (refinedLabel)、类型 (type，只能是 'device' | 'tool' | 'wire' | 'concept' | 'capacitor' | 'person' 之一)、详细分析描述 (details)，并找出与它最相关的那个记忆卡片ID (memoryCardId，从卡片的 ID 字段中获取)。
+3. 提取实体与实体之间的语义关联 (relations)。
+
+注意：
+1. type 必须是以下六个值之一：'device'（设备/仪器）、'tool'（工具）、'wire'（连线）、'concept'（普通概念）、'capacitor'（电容/元器件）、'person'（人物）。
+2. relations 中的 target 必须是图谱中其他节点的 ID（由名称拼写转换为小写下划线标识，如 "gwen"、"friend"）。
+
+请严格只返回一个 JSON 对象，格式如下：
+{
+  "nodes": [
+    {
+      "id": "gwen",
+      "refinedLabel": "Gwen",
+      "type": "person",
+      "details": "系统主用户 Gwen。",
+      "memoryCardId": "对应的记忆卡片ID"
+    }
+  ],
+  "links": [
+    {
+      "source": "friend",
+      "target": "gwen",
+      "relation": "朋友"
+    }
+  ]
+}
+不要包含任何 markdown 块或额外的解释文字。`;
+
+    let resultText = '';
+
+    try {
+      if (useDashScope) {
+        const modelName = process.env.DASHSCOPE_CHAT_MODEL || 'qwen-vl-plus';
+        const client = new OpenAI({
+          apiKey: dashscopeKey,
+          baseURL: process.env.DASHSCOPE_LLM_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        });
+
+        const response = await client.chat.completions.create({
+          model: modelName.replace('-vl', ''), // Use text-only model variant
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2
+        });
+
+        resultText = response.choices[0]?.message?.content || '';
+      } else if (useOpenRouter) {
+        const modelName = process.env.OPENROUTER_CHAT_MODEL || 'nex-agi/nex-n2-pro:free';
+        const client = new OpenAI({
+          apiKey: openrouterKey,
+          baseURL: 'https://openrouter.ai/api/v1'
+        });
+
+        const response = await client.chat.completions.create({
+          model: modelName,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2
+        });
+
+        resultText = response.choices[0]?.message?.content || '';
+      }
+
+      console.log(`[ModelRouter] Reconstruct graph raw response:\n${resultText}`);
+
+      let graphData: { nodes: any[]; links: any[] } = { nodes: [], links: [] };
+      const match = resultText.match(/\{[\s\S]*\}/);
+      if (match) {
+        graphData = JSON.parse(match[0]);
+      } else {
+        graphData = JSON.parse(resultText);
+      }
+
+      // Post-process: map memoryCardId to image_base64
+      if (graphData && Array.isArray(graphData.nodes)) {
+        for (const node of graphData.nodes) {
+          const cardId = node.memoryCardId;
+          if (cardId) {
+            const matchedMemory = memories.find(m => m.memory_id === cardId);
+            if (matchedMemory && matchedMemory.image_base64) {
+              node.image = matchedMemory.image_base64;
+            }
+          }
+          // Ensure standard ID format (lowercase, underscores)
+          node.id = node.id.toLowerCase().replace(/\s+/g, '_');
+        }
+      }
+
+      // Map links source/target IDs to match standard
+      if (graphData && Array.isArray(graphData.links)) {
+        for (const link of graphData.links) {
+          if (typeof link.source === 'string') {
+            link.source = link.source.toLowerCase().replace(/\s+/g, '_');
+          }
+          if (typeof link.target === 'string') {
+            link.target = link.target.toLowerCase().replace(/\s+/g, '_');
+          }
+        }
+      }
+
+      return {
+        nodes: graphData.nodes || [],
+        links: graphData.links || []
+      };
+
+    } catch (err) {
+      console.error('[ModelRouter] Failed to reconstruct graph from LLM:', err);
+      return { nodes: [], links: [] };
     }
   }
 }

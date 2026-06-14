@@ -141,6 +141,21 @@ export class EpisodicMemoryService {
     }
   }
 
+  /**
+   * 获取所有历史情景记忆卡片 Payload
+   */
+  public static async getAllMemories(): Promise<any[]> {
+    await this.ensureInitialized();
+    if (!this.qdrant) return [];
+    try {
+      const points = await this.qdrant.scrollPoints(200);
+      return points.map(p => p.payload);
+    } catch (err) {
+      console.error('[EpisodicMemoryService] Failed to retrieve all memories:', err);
+      return [];
+    }
+  }
+
   // ─── 记忆检索 ───
 
   /**
