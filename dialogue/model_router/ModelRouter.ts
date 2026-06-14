@@ -9,6 +9,7 @@ import { Socket } from 'socket.io';
 import { EpisodicMemoryService } from '../../memory_graph/episodic_memory/EpisodicMemoryService';
 import type { TimelineEvent, ConversationMessageEvent } from '../gateway_core/SocketGateway';
 import { CosyVoiceTtsClient } from './CosyVoiceTtsClient';
+import { resolveCosyVoiceId } from './cosyVoicePresetVoices';
 
 type OpenRouterContentPart =
   | { type: 'text'; text: string }
@@ -391,6 +392,7 @@ export class ModelRouter {
     localText?: string,
     overrideLlmProvider?: string,
     overrideTtsProvider?: string,
+    overrideTtsVoiceId?: string,
     existingNodes?: string[],
     visualContext?: string[]
   ): Promise<void> {
@@ -670,7 +672,7 @@ export class ModelRouter {
 
             if (clause) {
               const currentIndex = ttsIndex++;
-              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider);
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider, overrideTtsVoiceId);
             }
             break;
           }
@@ -688,7 +690,7 @@ export class ModelRouter {
     const remaining = sentenceBuffer.trim();
     if (remaining) {
       const currentIndex = ttsIndex++;
-      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider);
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider, overrideTtsVoiceId);
     }
 
     console.log('Stream generation completed.');
@@ -722,6 +724,7 @@ export class ModelRouter {
     requestId: number,
     overrideLlmProvider?: string,
     overrideTtsProvider?: string,
+    overrideTtsVoiceId?: string,
     existingNodes?: string[],
     visualContext?: string[]
   ): Promise<void> {
@@ -837,7 +840,7 @@ export class ModelRouter {
 
             if (clause) {
               const currentIndex = ttsIndex++;
-              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider);
+              this.synthesizeAndEmit(socket, clause, currentIndex, signal, requestId, overrideTtsProvider, overrideTtsVoiceId);
             }
             break;
           }
@@ -849,7 +852,7 @@ export class ModelRouter {
     const remaining = sentenceBuffer.trim();
     if (remaining) {
       const currentIndex = ttsIndex++;
-      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider);
+      this.synthesizeAndEmit(socket, remaining, currentIndex, signal, requestId, overrideTtsProvider, overrideTtsVoiceId);
     }
 
     modelMessageEntry.timestamp = Date.now();
@@ -876,7 +879,8 @@ export class ModelRouter {
     index: number,
     signal: AbortSignal,
     requestId: number,
-    overrideTtsProvider?: string
+    overrideTtsProvider?: string,
+    overrideTtsVoiceId?: string
   ): Promise<void> {
     if (overrideTtsProvider === 'browser') {
       return;
@@ -886,7 +890,7 @@ export class ModelRouter {
     }
 
     try {
-      const voiceId = process.env.DASHSCOPE_VOICE_ID || 'longanyang';
+      const voiceId = resolveCosyVoiceId(overrideTtsVoiceId);
       const audioBuffer = await this.ttsClient.synthesize(text, voiceId);
 
       if (signal.aborted) {

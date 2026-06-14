@@ -34,6 +34,7 @@ interface VADEndPayload {
   localText?: string;
   llmProvider?: string;
   ttsProvider?: string;
+  ttsVoiceId?: string;
   startFrame?: string;
   endFrame?: string;
   existingNodes?: string[];
@@ -50,6 +51,7 @@ interface TextQueryPayload {
   speechEndedAt?: number;
   llmProvider?: string;
   ttsProvider?: string;
+  ttsVoiceId?: string;
   imageFrame?: string;
   existingNodes?: string[];
   visualContext?: string[];
@@ -214,6 +216,7 @@ export class SocketGateway {
             requestId,
             payload.llmProvider,
             payload.ttsProvider,
+            payload.ttsVoiceId,
             payload.existingNodes,
             payload.visualContext
           );
@@ -294,6 +297,7 @@ export class SocketGateway {
             localText,
             payload?.llmProvider,
             payload?.ttsProvider,
+            payload?.ttsVoiceId,
             payload?.existingNodes,
             payload?.visualContext
           );

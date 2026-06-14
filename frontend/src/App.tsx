@@ -13,6 +13,12 @@ import {
   Clock, Link2, FileText, User 
 } from 'lucide-react';
 import { Live2DView } from './Live2DView';
+import {
+  DEFAULT_COSYVOICE_VOICE_ID,
+  getCosyVoicePresetLabel,
+  groupCosyVoicePresetsByScenario,
+  normalizeStoredCosyVoiceId
+} from '../../dialogue/model_router/cosyVoicePresetVoices';
 
 function selectSpeechMimeType(): string {
   const candidates = [
@@ -277,6 +283,11 @@ export default function App() {
   const llmProviderRef = useRef<string>(localStorage.getItem('llm_provider') || 'dashscope');
   const [ttsProvider, setTtsProvider] = useState<string>(() => localStorage.getItem('tts_provider') || 'cosyvoice');
   const ttsProviderRef = useRef<string>(localStorage.getItem('tts_provider') || 'cosyvoice');
+  const [ttsVoiceId, setTtsVoiceId] = useState<string>(() =>
+    normalizeStoredCosyVoiceId(localStorage.getItem('tts_voice_id'))
+  );
+  const ttsVoiceIdRef = useRef<string>(normalizeStoredCosyVoiceId(localStorage.getItem('tts_voice_id')));
+  const cosyVoiceGroups = useMemo(() => groupCosyVoicePresetsByScenario(), []);
 
   const resetAssistantStreamState = () => {
     setAiResponse('');
@@ -338,6 +349,11 @@ export default function App() {
     nextPlayIndexRef.current = 0;
     isAudioPlayingRef.current = false;
   }, [ttsProvider]);
+
+  useEffect(() => {
+    ttsVoiceIdRef.current = ttsVoiceId;
+    localStorage.setItem('tts_voice_id', ttsVoiceId);
+  }, [ttsVoiceId]);
 
   useEffect(() => {
     // 1. Initialize WebSocket Connection
@@ -698,6 +714,7 @@ export default function App() {
       text: queryText,
       llmProvider: llmProviderRef.current,
       ttsProvider: ttsProviderRef.current,
+      ttsVoiceId: ttsVoiceIdRef.current,
       imageFrame: base64Frame,
       existingNodes: Array.from(graphNodeSetRef.current),
       visualContext: detectedObjectsRef.current
@@ -743,6 +760,7 @@ export default function App() {
       text: queryText,
       llmProvider: llmProviderRef.current,
       ttsProvider: ttsProviderRef.current,
+      ttsVoiceId: ttsVoiceIdRef.current,
       imageFrame: base64Frame,
       existingNodes: Array.from(graphNodeSetRef.current),
       visualContext: [cleanKeyword, ...detectedObjectsRef.current]
@@ -1372,6 +1390,7 @@ export default function App() {
         localText: localSpeechTextRef.current,
         llmProvider: llmProviderRef.current,
         ttsProvider: ttsProviderRef.current,
+        ttsVoiceId: ttsVoiceIdRef.current,
         startFrame: startFrame ? startFrame.imageBase64 : undefined,
         endFrame: endFrame ? endFrame.imageBase64 : undefined,
         existingNodes: Array.from(graphNodeSetRef.current),
@@ -1902,7 +1921,9 @@ export default function App() {
               </div>
               <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
               <div>
-                TTS: <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>{ttsProvider === 'cosyvoice' ? 'CosyVoice' : 'Browser'}</span>
+                TTS: <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>
+                  {ttsProvider === 'cosyvoice' ? getCosyVoicePresetLabel(ttsVoiceId) : 'Browser'}
+                </span>
               </div>
               <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
               <div>
@@ -2016,6 +2037,39 @@ export default function App() {
                 </button>
               </div>
             </div>
+            {ttsProvider === 'cosyvoice' && (
+              <div>
+                <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
+                  CosyVoice 系统音色
+                </label>
+                <select
+                  value={ttsVoiceId}
+                  onChange={(e) => setTtsVoiceId(e.target.value)}
+                  style={{
+                    width: '100%',
+                    background: '#1e293b',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff',
+                    padding: '8px',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {Array.from(cosyVoiceGroups.entries()).map(([scenario, voices]) => (
+                    <optgroup key={scenario} label={scenario}>
+                      {voices.map((voice) => (
+                        <option key={voice.id} value={voice.id}>
+                          {voice.name} · {voice.trait}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <p style={{ fontSize: '10px', color: '#64748b', margin: '6px 0 0' }}>
+                  默认音色：{getCosyVoicePresetLabel(DEFAULT_COSYVOICE_VOICE_ID)}。自定义克隆音色后续再接入。
+                </p>
+              </div>
+            )}
             <div>
               <label style={{ fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase', display: 'block', marginBottom: '5px' }}>
                 AI播音时打断概率阈值 (Interruption Threshold during Playback)
